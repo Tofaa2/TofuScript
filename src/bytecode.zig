@@ -11,6 +11,9 @@ pub const OpCode = enum(u8) {
     get_global,
     set_global,
     define_global,
+    // Locals
+    load_local,
+    store_local,
 
     // Operations
     add,
@@ -96,6 +99,8 @@ pub const Chunk = struct {
             .get_global => return self.constantInstruction("OP_GET_GLOBAL", offset),
             .set_global => return self.constantInstruction("OP_SET_GLOBAL", offset),
             .define_global => return self.constantInstruction("OP_DEFINE_GLOBAL", offset),
+            .load_local => return self.byteInstruction("OP_LOAD_LOCAL", offset),
+            .store_local => return self.byteInstruction("OP_STORE_LOCAL", offset),
             .add => return self.simpleInstruction("OP_ADD", offset),
             .subtract => return self.simpleInstruction("OP_SUBTRACT", offset),
             .multiply => return self.simpleInstruction("OP_MULTIPLY", offset),

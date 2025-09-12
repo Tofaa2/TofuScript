@@ -131,6 +131,24 @@ pub const VM = struct {
 
                     try self.globals.put(try self.allocator.dupe(u8, name.chars), value_i);
                 },
+                .load_local => {
+                    const slot = self.readByte(frame);
+                    const idx = frame.slots + 1 + slot;
+                    if (idx >= self.stack.items.len) {
+                        std.debug.print("Invalid local slot {d}\n", .{idx});
+                        return error.InvalidLocalSlot;
+                    }
+                    try self.push(self.stack.items[idx]);
+                },
+                .store_local => {
+                    const slot = self.readByte(frame);
+                    const idx = frame.slots + 1 + slot;
+                    if (idx >= self.stack.items.len) {
+                        std.debug.print("Invalid local slot {d}\n", .{idx});
+                        return error.InvalidLocalSlot;
+                    }
+                    self.stack.items[idx] = self.peek(0);
+                },
                 .add => {
                     const b = self.pop();
                     const a = self.pop();

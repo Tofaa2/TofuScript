@@ -117,6 +117,7 @@ Phase 1 (COMPLETE) — Language completeness (MVP):
 Phase 2 — Scoping and closures:
 - Implement Resolver: scopes, locals, parameters-as-locals, shadowing rules.
 - VM opcodes: LOAD_LOCAL, STORE_LOCAL, OP_CLOSURE, OP_GET_UPVALUE, OP_SET_UPVALUE.
+- Introduction of structs, traits and trait implementation for structs.
 - Closure objects and upvalue capture semantics.
 
 Phase 3 — Runtime and memory:
@@ -132,6 +133,7 @@ Phase 4 — Collections and standard library MVP:
 Phase 5 — Tooling and UX:
 - REPL with line editing, multi-line input, and error reporting.
 - Module system: file-based loader, search paths, module cache.
+- LSP and Syntax Highlighting.
 - Debugger hooks: breakpoints, step, stack traces, value inspection.
 
 Phase 6 — Optimization and releases:

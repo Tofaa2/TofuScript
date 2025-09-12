@@ -79,7 +79,7 @@ pub fn main() !void {
     try my_vm.interpret(my_compiler.function);
 
     // Disassemble the chunk (for debugging)
-    //my_compiler.function.chunk.disassemble("main");
+    my_compiler.function.chunk.disassemble("main");
 }
 
 fn nativePrint(arg_count: u8, args: []value.Value) value.Value {

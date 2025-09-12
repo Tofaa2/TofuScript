@@ -19,6 +19,7 @@ pub const Compiler = struct {
     function_type: FunctionType = .script,
     scope_depth: i32 = 0,
     loop_stack: std.ArrayList(LoopCtx),
+    locals: std.ArrayList(Local),
 
     const FunctionType = enum {
         function,
@@ -32,6 +33,11 @@ pub const Compiler = struct {
         continue_target: ?usize = null,
     };
 
+    const Local = struct {
+        name: []const u8,
+        depth: i32, // -1 means uninitialized (declared but not defined)
+    };
+
     pub fn init(allocator: std.mem.Allocator, function_type: FunctionType) !*Compiler {
         const compiler = try allocator.create(Compiler);
         compiler.* = .{
@@ -39,6 +45,7 @@ pub const Compiler = struct {
             .function = try ObjFunction.init(allocator),
             .function_type = function_type,
             .loop_stack = std.ArrayList(LoopCtx).init(allocator),
+            .locals = std.ArrayList(Local).init(allocator),
         };
         return compiler;
     }
@@ -50,6 +57,12 @@ pub const Compiler = struct {
             ctx.break_patches.deinit();
         }
         self.loop_stack.deinit();
+
+        // Free local names and list
+        for (self.locals.items) |loc| {
+            self.allocator.free(loc.name);
+        }
+        self.locals.deinit();
 
         self.function.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -72,9 +85,10 @@ pub const Compiler = struct {
 
                 // Compile function body
                 compiler.beginScope();
-                for (node.data.function_decl.params.items) |_| {
+                for (node.data.function_decl.params.items) |param_name| {
                     compiler.function.arity += 1;
-                    // TODO: Add parameter to local variables
+                    try compiler.declareVariable(param_name);
+                    try compiler.defineVariable(param_name);
                 }
                 try compiler.compile(node.data.function_decl.body);
                 try compiler.emitReturn();
@@ -101,22 +115,34 @@ pub const Compiler = struct {
                     try self.emitByte(@intFromEnum(OpCode.nil));
                 }
 
-                // define_global name
-                try self.emitByte(@intFromEnum(OpCode.define_global));
-                const name_obj = try ObjString.init(self.allocator, name);
-                const name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &name_obj.obj });
-                if (name_index > 255) return error.TooManyConstants;
-                try self.emitByte(@intCast(name_index));
+                if (self.scope_depth == 0) {
+                    // Global variable
+                    try self.emitByte(@intFromEnum(OpCode.define_global));
+                    const name_obj = try ObjString.init(self.allocator, name);
+                    const name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &name_obj.obj });
+                    if (name_index > 255) return error.TooManyConstants;
+                    try self.emitByte(@intCast(name_index));
+                } else {
+                    // Local variable: just bind it to the current scope; value already on stack
+                    try self.declareVariable(name);
+                    try self.defineVariable(name);
+                }
             },
             .assignment => {
+                const name = node.data.assignment.name;
                 try self.compile(node.data.assignment.value);
 
-                // set_global name
-                try self.emitByte(@intFromEnum(OpCode.set_global));
-                const assign_name_obj = try ObjString.init(self.allocator, node.data.assignment.name);
-                const assign_name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &assign_name_obj.obj });
-                if (assign_name_index > 255) return error.TooManyConstants;
-                try self.emitByte(@intCast(assign_name_index));
+                if (self.resolveLocal(name)) |local_index| {
+                    try self.emitByte(@intFromEnum(OpCode.store_local));
+                    try self.emitByte(local_index);
+                } else {
+                    // set_global name
+                    try self.emitByte(@intFromEnum(OpCode.set_global));
+                    const assign_name_obj = try ObjString.init(self.allocator, name);
+                    const assign_name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &assign_name_obj.obj });
+                    if (assign_name_index > 255) return error.TooManyConstants;
+                    try self.emitByte(@intCast(assign_name_index));
+                }
             },
             .binary_expr => {
                 try self.compile(node.data.binary_expr.left);
@@ -197,11 +223,16 @@ pub const Compiler = struct {
             },
             .identifier => {
                 const name = node.data.identifier.name;
-                try self.emitByte(@intFromEnum(OpCode.get_global));
-                const ident_name_obj = try ObjString.init(self.allocator, name);
-                const ident_name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &ident_name_obj.obj });
-                if (ident_name_index > 255) return error.TooManyConstants;
-                try self.emitByte(@intCast(ident_name_index));
+                if (self.resolveLocal(name)) |local_index| {
+                    try self.emitByte(@intFromEnum(OpCode.load_local));
+                    try self.emitByte(local_index);
+                } else {
+                    try self.emitByte(@intFromEnum(OpCode.get_global));
+                    const ident_name_obj = try ObjString.init(self.allocator, name);
+                    const ident_name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &ident_name_obj.obj });
+                    if (ident_name_index > 255) return error.TooManyConstants;
+                    try self.emitByte(@intCast(ident_name_index));
+                }
             },
             .call_expr => {
                 try self.compile(node.data.call_expr.callee);
@@ -443,12 +474,52 @@ pub const Compiler = struct {
         try self.emitByte(@intFromEnum(OpCode.@"return"));
     }
 
+    fn declareVariable(self: *Compiler, name: []const u8) !void {
+        if (self.scope_depth == 0) return;
+
+        // Check for duplicate variable in the current scope
+        var i: isize = @as(isize, @intCast(self.locals.items.len)) - 1;
+        while (i >= 0) : (i -= 1) {
+            const local = self.locals.items[@intCast(i)];
+            if (local.depth != -1 and local.depth < self.scope_depth) break;
+            if (std.mem.eql(u8, local.name, name)) {
+                return error.VariableAlreadyDeclared;
+            }
+        }
+
+        const dup = try self.allocator.dupe(u8, name);
+        try self.locals.append(.{ .name = dup, .depth = -1 });
+    }
+
+    fn defineVariable(self: *Compiler, _: []const u8) !void {
+        if (self.scope_depth == 0) return;
+        self.locals.items[self.locals.items.len - 1].depth = self.scope_depth;
+    }
+
+    fn resolveLocal(self: *Compiler, name: []const u8) ?u8 {
+        var i: isize = @as(isize, @intCast(self.locals.items.len)) - 1;
+        while (i >= 0) : (i -= 1) {
+            const local = self.locals.items[@intCast(i)];
+            if (std.mem.eql(u8, local.name, name)) {
+                const idx: usize = @intCast(i);
+                if (idx > std.math.maxInt(u8)) return null;
+                return @intCast(idx);
+            }
+        }
+        return null;
+    }
+
     fn beginScope(self: *Compiler) void {
         self.scope_depth += 1;
     }
 
     fn endScope(self: *Compiler) !void {
         self.scope_depth -= 1;
-        // TODO: Pop local variables
+        // Pop locals belonging to this scope
+        while (self.locals.items.len > 0 and self.locals.items[self.locals.items.len - 1].depth > self.scope_depth) {
+            try self.emitByte(@intFromEnum(OpCode.pop));
+            const last = self.locals.pop().?;
+            self.allocator.free(last.name);
+        }
     }
 };
