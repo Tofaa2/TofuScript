@@ -8,11 +8,20 @@ pub const NodeType = enum {
     variable_decl,
     assignment,
     binary_expr,
+    unary_expr,
+    logical_expr,
     literal,
     identifier,
     call_expr,
     import_stmt,
     block_stmt,
+    expression_stmt,
+    if_stmt,
+    while_stmt,
+    for_stmt,
+    return_stmt,
+    break_stmt,
+    continue_stmt,
 };
 
 pub const LiteralValue = union(enum) {
@@ -50,6 +59,15 @@ pub const Node = struct {
             operator: Token,
             right: *Node,
         },
+        unary_expr: struct {
+            operator: Token,
+            right: *Node,
+        },
+        logical_expr: struct {
+            left: *Node,
+            operator: Token, // 'and' or 'or'
+            right: *Node,
+        },
         literal: struct {
             value: LiteralValue,
         },
@@ -66,6 +84,29 @@ pub const Node = struct {
         block_stmt: struct {
             statements: std.ArrayList(*Node),
         },
+        expression_stmt: struct {
+            expr: *Node,
+        },
+        if_stmt: struct {
+            condition: *Node,
+            then_branch: *Node,
+            else_branch: ?*Node,
+        },
+        while_stmt: struct {
+            condition: *Node,
+            body: *Node,
+        },
+        for_stmt: struct {
+            initializer: ?*Node,
+            condition: ?*Node,
+            increment: ?*Node,
+            body: *Node,
+        },
+        return_stmt: struct {
+            value: ?*Node,
+        },
+        break_stmt: struct {},
+        continue_stmt: struct {},
     };
 
     pub fn init(allocator: std.mem.Allocator, node_type: NodeType) !*Node {
@@ -93,6 +134,15 @@ pub const Node = struct {
                 .operator = undefined,
                 .right = undefined,
             } },
+            .unary_expr => node.data = .{ .unary_expr = .{
+                .operator = undefined,
+                .right = undefined,
+            } },
+            .logical_expr => node.data = .{ .logical_expr = .{
+                .left = undefined,
+                .operator = undefined,
+                .right = undefined,
+            } },
             .literal => node.data = .{ .literal = .{ .value = .{ .nil = {} } } },
             .identifier => node.data = .{ .identifier = .{ .name = "" } },
             .call_expr => node.data = .{ .call_expr = .{
@@ -103,6 +153,29 @@ pub const Node = struct {
             .block_stmt => node.data = .{ .block_stmt = .{
                 .statements = std.ArrayList(*Node).init(allocator),
             } },
+            .expression_stmt => node.data = .{ .expression_stmt = .{
+                .expr = undefined,
+            } },
+            .if_stmt => node.data = .{ .if_stmt = .{
+                .condition = undefined,
+                .then_branch = undefined,
+                .else_branch = null,
+            } },
+            .while_stmt => node.data = .{ .while_stmt = .{
+                .condition = undefined,
+                .body = undefined,
+            } },
+            .for_stmt => node.data = .{ .for_stmt = .{
+                .initializer = null,
+                .condition = null,
+                .increment = null,
+                .body = undefined,
+            } },
+            .return_stmt => node.data = .{ .return_stmt = .{
+                .value = null,
+            } },
+            .break_stmt => node.data = .{ .break_stmt = .{} },
+            .continue_stmt => node.data = .{ .continue_stmt = .{} },
         }
 
         return node;
@@ -123,6 +196,13 @@ pub const Node = struct {
                 self.data.binary_expr.left.deinit(allocator);
                 self.data.binary_expr.right.deinit(allocator);
             },
+            .unary_expr => {
+                self.data.unary_expr.right.deinit(allocator);
+            },
+            .logical_expr => {
+                self.data.logical_expr.left.deinit(allocator);
+                self.data.logical_expr.right.deinit(allocator);
+            },
             .literal => if (self.data.literal.value == .string) {
                 allocator.free(self.data.literal.value.string);
             },
@@ -141,6 +221,29 @@ pub const Node = struct {
                 }
                 self.data.block_stmt.statements.deinit();
             },
+            .expression_stmt => {
+                self.data.expression_stmt.expr.deinit(allocator);
+            },
+            .if_stmt => {
+                self.data.if_stmt.condition.deinit(allocator);
+                self.data.if_stmt.then_branch.deinit(allocator);
+                if (self.data.if_stmt.else_branch) |else_b| else_b.deinit(allocator);
+            },
+            .while_stmt => {
+                self.data.while_stmt.condition.deinit(allocator);
+                self.data.while_stmt.body.deinit(allocator);
+            },
+            .for_stmt => {
+                if (self.data.for_stmt.initializer) |init_node| init_node.deinit(allocator);
+                if (self.data.for_stmt.condition) |cond| cond.deinit(allocator);
+                if (self.data.for_stmt.increment) |inc| inc.deinit(allocator);
+                self.data.for_stmt.body.deinit(allocator);
+            },
+            .return_stmt => {
+                if (self.data.return_stmt.value) |val| val.deinit(allocator);
+            },
+            .break_stmt => {},
+            .continue_stmt => {},
         }
         allocator.destroy(self);
     }

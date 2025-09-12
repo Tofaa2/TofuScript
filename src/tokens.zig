@@ -41,6 +41,8 @@ pub const TokenType = enum {
     @"or",
     print,
     @"return",
+    @"break",
+    @"continue",
     super,
     this,
     true,

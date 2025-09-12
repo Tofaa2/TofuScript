@@ -51,10 +51,12 @@ pub const VM = struct {
     }
 
     pub fn interpret(self: *VM, function: *ObjFunction) !void {
+        // Push the function object so top-level return can pop it, matching call frame convention.
+        try self.push(Value{ .obj = &function.obj });
         try self.frames.append(.{
             .function = function,
             .ip = 0,
-            .slots = 0,
+            .slots = self.stack.items.len - 1,
         });
 
         try self.run();
@@ -213,7 +215,6 @@ pub const VM = struct {
                     _ = self.frames.pop();
 
                     if (self.frames.items.len == 0) {
-                        _ = self.pop(); // Pop the function
                         return;
                     }
 

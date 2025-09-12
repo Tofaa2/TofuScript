@@ -115,14 +115,25 @@ pub const Parser = struct {
             return try self.blockStatement();
         }
         if (self.match(.@"if")) {
-            // TODO: Implement if statements
-            return error.NotImplemented;
+            return try self.ifStatement();
+        }
+        if (self.match(.@"while")) {
+            return try self.whileStatement();
+        }
+        if (self.match(.@"for")) {
+            return try self.forStatement();
         }
         if (self.match(.print)) {
             return try self.printStatement();
         }
         if (self.match(.@"return")) {
             return try self.returnStatement();
+        }
+        if (self.match(.@"break")) {
+            return try self.breakStatement();
+        }
+        if (self.match(.@"continue")) {
+            return try self.continueStatement();
         }
 
         return try self.expressionStatement();
@@ -153,22 +164,32 @@ pub const Parser = struct {
         call_node.data.call_expr.callee = print_ident;
         try call_node.data.call_expr.args.append(expr);
 
-        return call_node;
+        // Wrap as an expression statement so the compiler can emit POP
+        const expr_stmt = try Node.init(self.allocator, .expression_stmt);
+        expr_stmt.data.expression_stmt.expr = call_node;
+        return expr_stmt;
     }
 
     fn returnStatement(self: *Parser) !*Node {
-        // TODO: Implement return statements
-        _ = try self.expression();
-        _ = try self.consume(.semicolon, "Expect ';' after return value");
+        const node = try Node.init(self.allocator, .return_stmt);
 
-        return error.NotImplemented;
+        if (!self.check(.semicolon)) {
+            node.data.return_stmt.value = try self.expression();
+        } else {
+            node.data.return_stmt.value = null;
+        }
+
+        _ = try self.consume(.semicolon, "Expect ';' after return");
+        return node;
     }
 
     fn expressionStatement(self: *Parser) !*Node {
         const expr = try self.expression();
         _ = try self.consume(.semicolon, "Expect ';' after expression");
 
-        return expr;
+        const node = try Node.init(self.allocator, .expression_stmt);
+        node.data.expression_stmt.expr = expr;
+        return node;
     }
 
     fn expression(self: *Parser) !*Node {
@@ -176,7 +197,7 @@ pub const Parser = struct {
     }
 
     fn assignment(self: *Parser) !*Node {
-        const expr = try self.equality();
+        const expr = try self.logicOr();
 
         if (self.match(.equal)) {
             const equals = self.previous();
@@ -276,14 +297,10 @@ pub const Parser = struct {
             const operator = self.previous();
             const right = try self.unary();
 
-            // For simplicity, we'll represent unary operations as binary with a null left
-            // In a real implementation, we'd have a separate unary expression node
-            const binary_node = try Node.init(self.allocator, .binary_expr);
-            binary_node.data.binary_expr.left = try self.literalNull();
-            binary_node.data.binary_expr.operator = operator;
-            binary_node.data.binary_expr.right = right;
-
-            return binary_node;
+            const node = try Node.init(self.allocator, .unary_expr);
+            node.data.unary_expr.operator = operator;
+            node.data.unary_expr.right = right;
+            return node;
         }
 
         return try self.call();
@@ -454,5 +471,116 @@ pub const Parser = struct {
 
             _ = self.advance();
         }
+    }
+
+    // New Phase 1 parsing helpers
+
+    fn ifStatement(self: *Parser) anyerror!*Node {
+        _ = try self.consume(.left_paren, "Expect '(' after 'if'");
+        const condition = try self.expression();
+        _ = try self.consume(.right_paren, "Expect ')' after if condition");
+
+        const node = try Node.init(self.allocator, .if_stmt);
+        node.data.if_stmt.condition = condition;
+        node.data.if_stmt.then_branch = try self.statement();
+
+        if (self.match(.@"else")) {
+            node.data.if_stmt.else_branch = try self.statement();
+        } else {
+            node.data.if_stmt.else_branch = null;
+        }
+
+        return node;
+    }
+
+    fn whileStatement(self: *Parser) anyerror!*Node {
+        _ = try self.consume(.left_paren, "Expect '(' after 'while'");
+        const condition = try self.expression();
+        _ = try self.consume(.right_paren, "Expect ')' after while condition");
+
+        const body = try self.statement();
+
+        const node = try Node.init(self.allocator, .while_stmt);
+        node.data.while_stmt.condition = condition;
+        node.data.while_stmt.body = body;
+        return node;
+    }
+
+    fn forStatement(self: *Parser) anyerror!*Node {
+        _ = try self.consume(.left_paren, "Expect '(' after 'for'");
+
+        var initializer: ?*Node = null;
+        if (self.match(.semicolon)) {
+            initializer = null;
+        } else if (self.match(.@"var")) {
+            initializer = try self.varDeclaration();
+        } else {
+            initializer = try self.expressionStatement();
+        }
+
+        var condition: ?*Node = null;
+        if (!self.check(.semicolon)) {
+            condition = try self.expression();
+        }
+        _ = try self.consume(.semicolon, "Expect ';' after loop condition");
+
+        var increment: ?*Node = null;
+        if (!self.check(.right_paren)) {
+            increment = try self.expression();
+        }
+        _ = try self.consume(.right_paren, "Expect ')' after for clauses");
+
+        const body = try self.statement();
+
+        const node = try Node.init(self.allocator, .for_stmt);
+        node.data.for_stmt.initializer = initializer;
+        node.data.for_stmt.condition = condition;
+        node.data.for_stmt.increment = increment;
+        node.data.for_stmt.body = body;
+        return node;
+    }
+
+    fn breakStatement(self: *Parser) anyerror!*Node {
+        _ = try self.consume(.semicolon, "Expect ';' after 'break'");
+        return try Node.init(self.allocator, .break_stmt);
+    }
+
+    fn continueStatement(self: *Parser) anyerror!*Node {
+        _ = try self.consume(.semicolon, "Expect ';' after 'continue'");
+        return try Node.init(self.allocator, .continue_stmt);
+    }
+
+    fn logicOr(self: *Parser) anyerror!*Node {
+        var expr = try self.logicAnd();
+
+        while (self.match(.@"or")) {
+            const operator = self.previous();
+            const right = try self.logicAnd();
+
+            const logical_node = try Node.init(self.allocator, .logical_expr);
+            logical_node.data.logical_expr.left = expr;
+            logical_node.data.logical_expr.operator = operator;
+            logical_node.data.logical_expr.right = right;
+            expr = logical_node;
+        }
+
+        return expr;
+    }
+
+    fn logicAnd(self: *Parser) anyerror!*Node {
+        var expr = try self.equality();
+
+        while (self.match(.@"and")) {
+            const operator = self.previous();
+            const right = try self.equality();
+
+            const logical_node = try Node.init(self.allocator, .logical_expr);
+            logical_node.data.logical_expr.left = expr;
+            logical_node.data.logical_expr.operator = operator;
+            logical_node.data.logical_expr.right = right;
+            expr = logical_node;
+        }
+
+        return expr;
     }
 };

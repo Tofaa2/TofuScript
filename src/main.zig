@@ -24,9 +24,21 @@ pub fn main() !void {
 
     const source =
         \\ func main() {
-        \\   var x = 10;
-        \\   var y = 20;
-        \\   print(x + y);
+        \\   var sum = 0;
+        \\   for (var i = 0; i < 5; i = i + 1) {
+        \\     if (i == 2) continue;
+        \\     sum = sum + i;
+        \\   }
+        \\   var j = 0;
+        \\   while (j < 2) {
+        \\     sum = sum + 10;
+        \\     j = j + 1;
+        \\   }
+        \\   if (sum >= 0) {
+        \\     print(sum);
+        \\   } else {
+        \\     print(0);
+        \\   }
         \\ }
         \\
         \\ main();

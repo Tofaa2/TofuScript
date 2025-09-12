@@ -38,23 +38,24 @@ zig build -Dtrace=true run
 ```
 
 What you get when tracing is enabled:
-- VM step trace: instruction pointer and opcode logs via [trace.log()](src/trace.zig:7)
+- VM step trace: instruction pointer and opcode logs via [trace.log()](src/trace.zig:8)
 - Compiler and bytecode events (e.g., constants added/emitted)
-- Disassembly output from [Chunk.disassemble()](src/bytecode.zig:73) gated in [main()](src/main.zig:19)
+- Disassembly output from [Chunk.disassemble()](src/bytecode.zig:74) gated in [main()](src/main.zig:20)
 ## Current capabilities (truthful)
 
 Language and parser:
 - Functions: declaration with name and parameters; calls with up to 255 args.
 - Variables: global var declarations with optional initializer; assignment to identifiers.
-- Blocks: lexical blocks with braces.
-- Expressions: literals (number, string, bool, nil), + - * /, == < >, grouping, calls, identifiers.
+- Blocks and statements: lexical blocks with braces; if/else; while; for (C-style clauses); return; break; continue.
+- Operators: literals (number, string, bool, nil), + - * /, == != < <= > >=, logical and/or (short-circuit), unary ! and -, grouping, calls, identifiers.
 - Print: print statement desugared to a function call.
 - Imports: recognized syntax; currently ignored by the compiler.
-- Not yet implemented: if/else, while/for, return, logical and/or, proper unary nodes, error recovery.
+- Parser recovery: synchronize on semicolons and braces to continue after errors.
 
 Compiler and bytecode:
 - Emits stack-oriented bytecode with short and long constant forms.
 - Globals only: get_global, set_global, define_global; no locals or closures yet.
+- Control flow lowering: if/else, while, for via jump, jump_if_false, loop; expression statements emit pop; logical and/or short-circuit codegen.
 - Function objects with arity; calls and returns.
 - Opcodes implemented: constant, constant_long, get_global, set_global, define_global, add, subtract, multiply, divide, negate, equal, greater, less, jump, jump_if_false, loop, call, return, print, pop, nil, true, false, not.
 
@@ -62,6 +63,7 @@ Virtual machine:
 - Stack-based VM with call frames, simple bounds checks, and native function interop (e.g., print).
 - Values: number, boolean, nil, string object, function object, native function object.
 - Strings support concatenation; interning is not yet implemented.
+- Control flow: supports conditional jumps, loops, and correct break/continue behavior consistent with compiler lowering.
 
 Codebase layout:
 - [src/lexer.zig](src/lexer.zig)
@@ -107,7 +109,7 @@ Phase 0 (COMPLETE) — Stabilize the prototype:
 - Improve error messages and add parser error synchronization.
 - Add disassembler improvements for bytecode debugging.
 
-Phase 1 — Language completeness (MVP):
+Phase 1 (COMPLETE) — Language completeness (MVP):
 - Statements: if/else, while, for, return, break/continue.
 - Operators: logical and/or, proper unary nodes.
 - Parser recovery: synchronize on ; and braces to continue after errors.
