@@ -22,6 +22,9 @@ pub const NodeType = enum {
     return_stmt,
     break_stmt,
     continue_stmt,
+    struct_decl,
+    trait_decl,
+    impl_decl,
 };
 
 pub const LiteralValue = union(enum) {
@@ -107,6 +110,17 @@ pub const Node = struct {
         },
         break_stmt: struct {},
         continue_stmt: struct {},
+        struct_decl: struct {
+            name: []const u8,
+            fields: std.ArrayList([]const u8),
+        },
+        trait_decl: struct {
+            name: []const u8,
+        },
+        impl_decl: struct {
+            trait_name: []const u8,
+            type_name: []const u8,
+        },
     };
 
     pub fn init(allocator: std.mem.Allocator, node_type: NodeType) !*Node {
@@ -176,6 +190,17 @@ pub const Node = struct {
             } },
             .break_stmt => node.data = .{ .break_stmt = .{} },
             .continue_stmt => node.data = .{ .continue_stmt = .{} },
+            .struct_decl => node.data = .{ .struct_decl = .{
+                .name = "",
+                .fields = std.ArrayList([]const u8).init(allocator),
+            } },
+            .trait_decl => node.data = .{ .trait_decl = .{
+                .name = "",
+            } },
+            .impl_decl => node.data = .{ .impl_decl = .{
+                .trait_name = "",
+                .type_name = "",
+            } },
         }
 
         return node;
@@ -244,6 +269,20 @@ pub const Node = struct {
             },
             .break_stmt => {},
             .continue_stmt => {},
+            .struct_decl => {
+                for (self.data.struct_decl.fields.items) |fname| {
+                    allocator.free(fname);
+                }
+                self.data.struct_decl.fields.deinit();
+                allocator.free(self.data.struct_decl.name);
+            },
+            .trait_decl => {
+                allocator.free(self.data.trait_decl.name);
+            },
+            .impl_decl => {
+                allocator.free(self.data.impl_decl.trait_name);
+                allocator.free(self.data.impl_decl.type_name);
+            },
         }
         allocator.destroy(self);
     }

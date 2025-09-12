@@ -49,6 +49,9 @@ pub const TokenType = enum {
     @"var",
     @"while",
     import,
+    @"struct",
+    trait,
+    impl,
 
     eof,
 };

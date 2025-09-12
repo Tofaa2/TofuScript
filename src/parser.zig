@@ -50,6 +50,15 @@ pub const Parser = struct {
         if (self.match(.@"var")) {
             return try self.varDeclaration();
         }
+        if (self.match(.@"struct")) {
+            return try self.structDeclaration();
+        }
+        if (self.match(.trait)) {
+            return try self.traitDeclaration();
+        }
+        if (self.match(.impl)) {
+            return try self.implDeclaration();
+        }
 
         return try self.statement();
     }
@@ -91,6 +100,45 @@ pub const Parser = struct {
         _ = try self.consume(.semicolon, "Expect ';' after import statement");
 
         return import_node;
+    }
+
+    fn structDeclaration(self: *Parser) !*Node {
+        const name_tok = try self.consume(.identifier, "Expect struct name");
+        const node = try Node.init(self.allocator, .struct_decl);
+        node.data.struct_decl.name = try self.allocator.dupe(u8, name_tok.lexeme);
+
+        _ = try self.consume(.left_brace, "Expect '{' after struct name");
+        if (!self.check(.right_brace)) {
+            while (true) {
+                const field_tok = try self.consume(.identifier, "Expect field name");
+                const fname = try self.allocator.dupe(u8, field_tok.lexeme);
+                try node.data.struct_decl.fields.append(fname);
+                if (!self.match(.comma)) break;
+            }
+        }
+        _ = try self.consume(.right_brace, "Expect '}' after struct fields");
+        // Optional semicolon for convenience
+        _ = self.match(.semicolon);
+        return node;
+    }
+
+    fn traitDeclaration(self: *Parser) !*Node {
+        const name_tok = try self.consume(.identifier, "Expect trait name");
+        const node = try Node.init(self.allocator, .trait_decl);
+        node.data.trait_decl.name = try self.allocator.dupe(u8, name_tok.lexeme);
+        _ = try self.consume(.semicolon, "Expect ';' after trait");
+        return node;
+    }
+
+    fn implDeclaration(self: *Parser) !*Node {
+        const trait_tok = try self.consume(.identifier, "Expect trait name after 'impl'");
+        _ = try self.consume(.@"for", "Expect 'for' after trait name");
+        const type_tok = try self.consume(.identifier, "Expect type name after 'for'");
+        const node = try Node.init(self.allocator, .impl_decl);
+        node.data.impl_decl.trait_name = try self.allocator.dupe(u8, trait_tok.lexeme);
+        node.data.impl_decl.type_name = try self.allocator.dupe(u8, type_tok.lexeme);
+        _ = try self.consume(.semicolon, "Expect ';' after impl");
+        return node;
     }
 
     fn varDeclaration(self: *Parser) !*Node {

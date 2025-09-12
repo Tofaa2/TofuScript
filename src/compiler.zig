@@ -422,6 +422,15 @@ pub const Compiler = struct {
                 var ctx_ref = &self.loop_stack.items[self.loop_stack.items.len - 1];
                 try ctx_ref.continue_patches.append(jmp_off);
             },
+            .struct_decl => {
+                trace.log("COMP", "struct {s} (fields={d}) - ignored by compiler in phase2", .{ node.data.struct_decl.name, node.data.struct_decl.fields.items.len });
+            },
+            .trait_decl => {
+                trace.log("COMP", "trait {s} - ignored by compiler in phase2", .{node.data.trait_decl.name});
+            },
+            .impl_decl => {
+                trace.log("COMP", "impl {s} for {s} - ignored by compiler in phase2", .{ node.data.impl_decl.trait_name, node.data.impl_decl.type_name });
+            },
         }
     }
 
