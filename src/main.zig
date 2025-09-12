@@ -22,27 +22,38 @@ pub fn main() !void {
     //defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const source =
-        \\ func main() {
-        \\   var sum = 0;
-        \\   for (var i = 0; i < 5; i = i + 1) {
-        \\     if (i == 2) continue;
-        \\     sum = sum + i;
-        \\   }
-        \\   var j = 0;
-        \\   while (j < 2) {
-        \\     sum = sum + 10;
-        \\     j = j + 1;
-        \\   }
-        \\   if (sum >= 0) {
-        \\     print(sum);
-        \\   } else {
-        \\     print(0);
-        \\   }
-        \\ }
-        \\
-        \\ main();
-    ;
+    // If a path is provided as the first CLI arg, read program text from that file.
+    // Otherwise, run a built-in demo program.
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    var source: []const u8 = undefined;
+    if (args.len >= 2) {
+        const path = args[1];
+        source = try std.fs.cwd().readFileAlloc(allocator, path, 10 * 1024 * 1024);
+    } else {
+        source =
+            \\ func main() {
+            \\   var sum = 0;
+            \\   for (var i = 0; i < 5; i = i + 1) {
+            \\     if (i == 2) continue;
+            \\     sum = sum + i;
+            \\   }
+            \\   var j = 0;
+            \\   while (j < 2) {
+            \\     sum = sum + 10;
+            \\     j = j + 1;
+            \\   }
+            \\   if (sum >= 0) {
+            \\     print(sum);
+            \\   } else {
+            \\     print(0);
+            \\   }
+            \\ }
+            \\
+            \\ main();
+        ;
+    }
 
     // Tokenize
     var my_lexer = Lexer.init(allocator, source);
