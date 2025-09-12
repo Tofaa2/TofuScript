@@ -41,6 +41,7 @@ pub const Value = union(enum) {
 pub const ObjType = enum {
     string,
     function,
+    closure,
     native,
 };
 
@@ -62,6 +63,14 @@ pub const Obj = struct {
                     std.debug.print("<script>", .{});
                 }
             },
+            .closure => {
+                const closure = @as(*ObjClosure, @fieldParentPtr("obj", self)).*;
+                if (closure.function.name) |name| {
+                    std.debug.print("<closure {s}>", .{name.chars});
+                } else {
+                    std.debug.print("<closure>", .{});
+                }
+            },
             .native => std.debug.print("<native fn>", .{}),
         }
     }
@@ -80,10 +89,15 @@ pub const Obj = struct {
             .function => {
                 const a_function = @as(*ObjFunction, @fieldParentPtr("obj", a)).*;
                 const b_function = @as(*ObjFunction, @fieldParentPtr("obj", b)).*;
-                //return a_function == b_function;
+                // Equality for functions is not supported yet.
                 _ = b_function;
                 _ = a_function;
-                return false; // Cant do function comparisons for now;
+                return false;
+            },
+            .closure => {
+                const a_closure = @as(*ObjClosure, @fieldParentPtr("obj", a));
+                const b_closure = @as(*ObjClosure, @fieldParentPtr("obj", b));
+                return a_closure == b_closure;
             },
             .native => {
                 const a_native = @as(*ObjNative, @fieldParentPtr("obj", a)).*;
@@ -115,6 +129,7 @@ pub const ObjString = struct {
 pub const ObjFunction = struct {
     obj: Obj = .{ .type = .function },
     arity: u8,
+    upvalue_count: u8 = 0,
     chunk: Chunk,
     name: ?*ObjString = null,
 
@@ -122,6 +137,7 @@ pub const ObjFunction = struct {
         const function = try allocator.create(ObjFunction);
         function.* = .{
             .arity = 0,
+            .upvalue_count = 0,
             .chunk = Chunk.init(allocator),
         };
         return function;
@@ -132,6 +148,26 @@ pub const ObjFunction = struct {
             name.deinit(allocator);
         }
         self.chunk.deinit();
+        allocator.destroy(self);
+    }
+};
+
+pub const ObjClosure = struct {
+    obj: Obj = .{ .type = .closure },
+    function: *ObjFunction,
+    upvalues: std.ArrayList(Value),
+
+    pub fn init(allocator: std.mem.Allocator, function: *ObjFunction) !*ObjClosure {
+        const closure = try allocator.create(ObjClosure);
+        closure.* = .{
+            .function = function,
+            .upvalues = std.ArrayList(Value).init(allocator),
+        };
+        return closure;
+    }
+
+    pub fn deinit(self: *ObjClosure, allocator: std.mem.Allocator) void {
+        self.upvalues.deinit();
         allocator.destroy(self);
     }
 };

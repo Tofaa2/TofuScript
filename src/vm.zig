@@ -8,6 +8,7 @@ const OpCode = bytecode.OpCode;
 const Value = value.Value;
 const Obj = value.Obj;
 const ObjFunction = value.ObjFunction;
+const ObjClosure = value.ObjClosure;
 const ObjNative = value.ObjNative;
 const NativeFn = value.NativeFn;
 
@@ -20,6 +21,7 @@ pub const VM = struct {
 
     const CallFrame = struct {
         function: *ObjFunction,
+        closure: ?*ObjClosure = null,
         ip: usize,
         slots: usize, // Stack offset for this frame
     };
@@ -55,6 +57,7 @@ pub const VM = struct {
         try self.push(Value{ .obj = &function.obj });
         try self.frames.append(.{
             .function = function,
+            .closure = null,
             .ip = 0,
             .slots = self.stack.items.len - 1,
         });
@@ -130,6 +133,69 @@ pub const VM = struct {
                     const value_i = self.pop();
 
                     try self.globals.put(try self.allocator.dupe(u8, name.chars), value_i);
+                },
+                .get_upvalue => {
+                    const idx = self.readByte(frame);
+                    if (frame.closure) |cl| {
+                        if (idx >= cl.upvalues.items.len) {
+                            std.debug.print("Invalid upvalue index {d}\n", .{idx});
+                            return error.InvalidUpvalueIndex;
+                        }
+                        try self.push(cl.upvalues.items[idx]);
+                    } else {
+                        std.debug.print("No closure in current frame\n", .{});
+                        return error.MissingClosure;
+                    }
+                },
+                .set_upvalue => {
+                    const idx = self.readByte(frame);
+                    if (frame.closure) |cl| {
+                        if (idx >= cl.upvalues.items.len) {
+                            std.debug.print("Invalid upvalue index {d}\n", .{idx});
+                            return error.InvalidUpvalueIndex;
+                        }
+                        cl.upvalues.items[idx] = self.peek(0);
+                    } else {
+                        std.debug.print("No closure in current frame\n", .{});
+                        return error.MissingClosure;
+                    }
+                },
+                .closure => {
+                    const const_index = self.readByte(frame);
+                    const val = frame.function.chunk.constants.items[const_index];
+                    if (val != .obj or val.obj.type != .function) {
+                        std.debug.print("OP_CLOSURE expects function constant\n", .{});
+                        return error.BadClosureConstant;
+                    }
+                    const fn_ptr = @as(*ObjFunction, @fieldParentPtr("obj", val.obj));
+                    var closure = try value.ObjClosure.init(self.allocator, fn_ptr);
+
+                    var i: usize = 0;
+                    while (i < fn_ptr.upvalue_count) : (i += 1) {
+                        const is_local = self.readByte(frame);
+                        const idx = self.readByte(frame);
+                        if (is_local != 0) {
+                            const slot_index = frame.slots + 1 + idx;
+                            if (slot_index >= self.stack.items.len) {
+                                std.debug.print("Invalid local slot {d}\n", .{slot_index});
+                                return error.InvalidLocalSlot;
+                            }
+                            try closure.upvalues.append(self.stack.items[slot_index]);
+                        } else {
+                            if (frame.closure) |enc_cl| {
+                                if (idx >= enc_cl.upvalues.items.len) {
+                                    std.debug.print("Invalid enclosing upvalue index {d}\n", .{idx});
+                                    return error.InvalidUpvalueIndex;
+                                }
+                                try closure.upvalues.append(enc_cl.upvalues.items[idx]);
+                            } else {
+                                // No enclosing closure: capture nil
+                                try closure.upvalues.append(Value{ .nil = {} });
+                            }
+                        }
+                    }
+
+                    try self.push(Value{ .obj = &closure.obj });
                 },
                 .load_local => {
                     const slot = self.readByte(frame);
@@ -281,10 +347,28 @@ pub const VM = struct {
     }
 
     fn callValue(self: *VM, callee: Value, arg_count: u8) bool {
-        // if (callee.obj) |obj| {
         if (true) {
             const obj = callee.obj;
             switch (obj.type) {
+                .closure => {
+                    const closure = @as(*ObjClosure, @fieldParentPtr("obj", obj));
+                    const function = closure.function;
+                    if (arg_count != function.*.arity) {
+                        std.debug.print("Expected {d} arguments but got {d}\n", .{ function.arity, arg_count });
+                        return false;
+                    }
+                    if (self.frames.items.len == FramesMax) {
+                        std.debug.print("Stack overflow\n", .{});
+                        return false;
+                    }
+                    self.frames.append(.{
+                        .function = function,
+                        .closure = closure,
+                        .ip = 0,
+                        .slots = self.stack.items.len - arg_count - 1,
+                    }) catch return false;
+                    return true;
+                },
                 .function => {
                     const function = @as(*ObjFunction, @fieldParentPtr("obj", obj));
                     if (arg_count != function.*.arity) {
@@ -299,6 +383,7 @@ pub const VM = struct {
 
                     self.frames.append(.{
                         .function = function,
+                        .closure = null,
                         .ip = 0,
                         .slots = self.stack.items.len - arg_count - 1,
                     }) catch return false;

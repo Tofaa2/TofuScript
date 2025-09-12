@@ -1,5 +1,7 @@
 const std = @import("std");
-const Value = @import("value.zig").Value;
+const v = @import("value.zig");
+const Value = v.Value;
+const ObjFunction = v.ObjFunction;
 const trace = @import("trace.zig");
 
 pub const OpCode = enum(u8) {
@@ -14,6 +16,10 @@ pub const OpCode = enum(u8) {
     // Locals
     load_local,
     store_local,
+    // Upvalues / Closures
+    get_upvalue,
+    set_upvalue,
+    closure,
 
     // Operations
     add,
@@ -101,6 +107,9 @@ pub const Chunk = struct {
             .define_global => return self.constantInstruction("OP_DEFINE_GLOBAL", offset),
             .load_local => return self.byteInstruction("OP_LOAD_LOCAL", offset),
             .store_local => return self.byteInstruction("OP_STORE_LOCAL", offset),
+            .get_upvalue => return self.byteInstruction("OP_GET_UPVALUE", offset),
+            .set_upvalue => return self.byteInstruction("OP_SET_UPVALUE", offset),
+            .closure => return self.closureInstruction("OP_CLOSURE", offset),
             .add => return self.simpleInstruction("OP_ADD", offset),
             .subtract => return self.simpleInstruction("OP_SUBTRACT", offset),
             .multiply => return self.simpleInstruction("OP_MULTIPLY", offset),
@@ -151,6 +160,39 @@ pub const Chunk = struct {
         self.constants.items[constant].print();
         std.debug.print("'\n", .{});
         return offset + 4;
+    }
+
+    fn closureInstruction(self: *Chunk, name: []const u8, offset: usize) usize {
+        const constant = self.code.items[offset + 1];
+        std.debug.print("{s} {d} '", .{ name, constant });
+        const val = self.constants.items[constant];
+        // Expect a function object at this constant
+        if (val == .obj) {
+            const obj = val.obj;
+            // Attempt to treat as function for disassembly purposes
+            // If not function, print generically
+            if (obj.type == .function) {
+                const func = @as(*ObjFunction, @fieldParentPtr("obj", obj)).*;
+                if (func.name) |nm| {
+                    std.debug.print("<fn {s}>", .{nm.chars});
+                } else {
+                    std.debug.print("<script>", .{});
+                }
+                std.debug.print("'\n", .{});
+                // Print captured upvalue mappings
+                var off: usize = offset + 2;
+                var i: usize = 0;
+                while (i < func.upvalue_count) : (i += 1) {
+                    const is_local = self.code.items[off];
+                    const idx = self.code.items[off + 1];
+                    std.debug.print("      | upvalue {d}: {s} {d}\n", .{ i, if (is_local != 0) "local" else "upvalue", idx });
+                    off += 2;
+                }
+                return off;
+            }
+        }
+        std.debug.print("'\n", .{});
+        return offset + 2;
     }
 
     fn jumpInstruction(self: *Chunk, name: []const u8, sign: i8, offset: usize) usize {

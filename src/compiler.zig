@@ -20,6 +20,7 @@ pub const Compiler = struct {
     scope_depth: i32 = 0,
     loop_stack: std.ArrayList(LoopCtx),
     locals: std.ArrayList(Local),
+    upvalues: std.ArrayList(Upvalue),
 
     const FunctionType = enum {
         function,
@@ -38,6 +39,11 @@ pub const Compiler = struct {
         depth: i32, // -1 means uninitialized (declared but not defined)
     };
 
+    const Upvalue = struct {
+        index: u8,
+        is_local: bool,
+    };
+
     pub fn init(allocator: std.mem.Allocator, function_type: FunctionType) !*Compiler {
         const compiler = try allocator.create(Compiler);
         compiler.* = .{
@@ -46,6 +52,7 @@ pub const Compiler = struct {
             .function_type = function_type,
             .loop_stack = std.ArrayList(LoopCtx).init(allocator),
             .locals = std.ArrayList(Local).init(allocator),
+            .upvalues = std.ArrayList(Upvalue).init(allocator),
         };
         return compiler;
     }
@@ -63,6 +70,8 @@ pub const Compiler = struct {
             self.allocator.free(loc.name);
         }
         self.locals.deinit();
+
+        self.upvalues.deinit();
 
         self.function.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -93,17 +102,34 @@ pub const Compiler = struct {
                 try compiler.compile(node.data.function_decl.body);
                 try compiler.emitReturn();
 
-                // Create function object
+                // Finalize function upvalue count
+                compiler.function.upvalue_count = @intCast(compiler.upvalues.items.len);
+
+                // Reference the function object via constant
                 const function = compiler.function;
+                const func_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &function.obj });
+                if (func_index > 255) return error.TooManyConstants;
 
-                // Push the function object onto the stack (define_global will pop it)
-                try self.emitConstant(Value{ .obj = &function.obj });
+                // Emit OP_CLOSURE func_index and encoded upvalues (pushes closure on stack)
+                try self.emitByte(@intFromEnum(OpCode.closure));
+                try self.emitByte(@intCast(func_index));
+                for (compiler.upvalues.items) |uv| {
+                    try self.emitByte(if (uv.is_local) 1 else 0);
+                    try self.emitByte(uv.index);
+                }
 
-                // Emit define_global with an immediate constant index operand
-                try self.emitByte(@intFromEnum(OpCode.define_global));
-                const name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &name.obj });
-                if (name_index > 255) return error.TooManyConstants;
-                try self.emitByte(@intCast(name_index));
+                // Bind the closure to a name in current scope
+                if (self.scope_depth == 0) {
+                    // Global: define_global pops the closure
+                    try self.emitByte(@intFromEnum(OpCode.define_global));
+                    const name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &name.obj });
+                    if (name_index > 255) return error.TooManyConstants;
+                    try self.emitByte(@intCast(name_index));
+                } else {
+                    // Local: declare/define the local; value remains on stack as the local slot
+                    try self.declareVariable(node.data.function_decl.name);
+                    try self.defineVariable(node.data.function_decl.name);
+                }
             },
             .variable_decl => {
                 const name = node.data.variable_decl.name;
@@ -135,6 +161,9 @@ pub const Compiler = struct {
                 if (self.resolveLocal(name)) |local_index| {
                     try self.emitByte(@intFromEnum(OpCode.store_local));
                     try self.emitByte(local_index);
+                } else if (self.resolveUpvalue(name)) |uv_index| {
+                    try self.emitByte(@intFromEnum(OpCode.set_upvalue));
+                    try self.emitByte(uv_index);
                 } else {
                     // set_global name
                     try self.emitByte(@intFromEnum(OpCode.set_global));
@@ -226,6 +255,9 @@ pub const Compiler = struct {
                 if (self.resolveLocal(name)) |local_index| {
                     try self.emitByte(@intFromEnum(OpCode.load_local));
                     try self.emitByte(local_index);
+                } else if (self.resolveUpvalue(name)) |uv_index| {
+                    try self.emitByte(@intFromEnum(OpCode.get_upvalue));
+                    try self.emitByte(uv_index);
                 } else {
                     try self.emitByte(@intFromEnum(OpCode.get_global));
                     const ident_name_obj = try ObjString.init(self.allocator, name);
@@ -504,6 +536,30 @@ pub const Compiler = struct {
                 const idx: usize = @intCast(i);
                 if (idx > std.math.maxInt(u8)) return null;
                 return @intCast(idx);
+            }
+        }
+        return null;
+    }
+
+    fn addUpvalue(self: *Compiler, index: u8, is_local: bool) !u8 {
+        // Deduplicate
+        var i: usize = 0;
+        while (i < self.upvalues.items.len) : (i += 1) {
+            const uv = self.upvalues.items[i];
+            if (uv.index == index and uv.is_local == is_local) return @intCast(i);
+        }
+        try self.upvalues.append(.{ .index = index, .is_local = is_local });
+        if (self.upvalues.items.len - 1 > std.math.maxInt(u8)) return error.TooManyUpvalues;
+        return @intCast(self.upvalues.items.len - 1);
+    }
+
+    fn resolveUpvalue(self: *Compiler, name: []const u8) ?u8 {
+        if (self.enclosing) |enc| {
+            if (enc.resolveLocal(name)) |local_idx| {
+                return self.addUpvalue(local_idx, true) catch null;
+            }
+            if (enc.resolveUpvalue(name)) |up_idx| {
+                return self.addUpvalue(up_idx, false) catch null;
             }
         }
         return null;
