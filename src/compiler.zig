@@ -577,6 +577,11 @@ pub const Compiler = struct {
 
                     compiler.function.upvalue_count = @intCast(compiler.upvalues.items.len);
 
+                    // Debug: disassemble compiled trait method when tracing enabled
+                    if (trace.enabled) {
+                        compiler.function.chunk.disassemble(method_name);
+                    }
+
                     try func_list.append(compiler.function);
 
                     // Define as global

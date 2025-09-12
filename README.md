@@ -114,7 +114,7 @@ Phase 1 (COMPLETE) — Language completeness (MVP):
 - Operators: logical and/or, proper unary nodes.
 - Parser recovery: synchronize on ; and braces to continue after errors.
 
-Phase 2 — Scoping and closures:
+Phase 2 — (Complete) Scoping and closures:
 - Implement Resolver: scopes, locals, parameters-as-locals, shadowing rules.
 - VM opcodes: LOAD_LOCAL, STORE_LOCAL, OP_CLOSURE, OP_GET_UPVALUE, OP_SET_UPVALUE.
 - Introduction of structs, traits and trait implementation for structs.

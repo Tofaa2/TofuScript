@@ -334,9 +334,11 @@ pub const VM = struct {
                     const slot = self.readByte(frame);
                     const idx = frame.slots + 1 + slot;
                     if (idx >= self.stack.items.len) {
-                        std.debug.print("Invalid local slot {d}\n", .{idx});
+                        std.debug.print("Invalid local slot {d} (slots={d}, slot={d}, stack_len={d})\n", .{ idx, frame.slots, slot, self.stack.items.len });
                         return error.InvalidLocalSlot;
                     }
+                    // Debug print to trace valid local access
+                    std.debug.print("load_local: idx={d} (slots={d}, slot={d}, stack_len={d})\n", .{ idx, frame.slots, slot, self.stack.items.len });
                     try self.push(self.stack.items[idx]);
                 },
                 .store_local => {
@@ -459,15 +461,22 @@ pub const VM = struct {
                     frame = &self.frames.items[self.frames.items.len - 1];
                 },
                 .@"return" => {
+                    // Use the current frame's slots (base of callee) to place the result back
                     const result = self.pop();
+                    const callee_slots = frame.slots;
                     _ = self.frames.pop();
 
                     if (self.frames.items.len == 0) {
+                        // Returning from top-level script: done
                         return;
                     }
 
-                    self.stack.items[self.frames.items[self.frames.items.len - 1].slots] = result;
-                    self.stack.shrinkRetainingCapacity(self.frames.items[self.frames.items.len - 1].slots + 1);
+                    // Replace the callee position in the caller's stack with the result,
+                    // then truncate the stack to exactly that single result slot.
+                    self.stack.items[callee_slots] = result;
+                    self.stack.shrinkRetainingCapacity(callee_slots + 1);
+
+                    // Continue executing in the caller frame
                     frame = &self.frames.items[self.frames.items.len - 1];
                 },
                 .print => {
