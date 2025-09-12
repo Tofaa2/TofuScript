@@ -134,6 +134,139 @@ pub const VM = struct {
 
                     try self.globals.put(try self.allocator.dupe(u8, name.chars), value_i);
                 },
+                .new_instance => {
+                    const ty_val = self.pop();
+                    if (ty_val != .obj or ty_val.obj.type != .struct_type) {
+                        std.debug.print("OP_NEW_INSTANCE expects struct type\n", .{});
+                        return error.BadInstanceType;
+                    }
+                    const ty = @as(*value.ObjStructType, @fieldParentPtr("obj", ty_val.obj));
+                    const inst = try value.ObjInstance.init(self.allocator, ty);
+                    try self.push(Value{ .obj = &inst.obj });
+                },
+                .get_field => {
+                    const field_name_val = self.readConstant(frame);
+                    const field_name = @as(*value.ObjString, @fieldParentPtr("obj", field_name_val.obj)).*;
+                    const inst_val = self.pop();
+                    if (inst_val != .obj or inst_val.obj.type != .instance) {
+                        std.debug.print("OP_GET_FIELD expects instance\n", .{});
+                        return error.BadFieldAccess;
+                    }
+                    const inst = @as(*value.ObjInstance, @fieldParentPtr("obj", inst_val.obj));
+                    const field_idx = inst.ty.indexOf(field_name.chars) orelse {
+                        std.debug.print("Field '{s}' not found\n", .{field_name.chars});
+                        return error.FieldNotFound;
+                    };
+                    try self.push(inst.fields.items[field_idx]);
+                },
+                .set_field => {
+                    const field_name_val = self.readConstant(frame);
+                    const field_name = @as(*value.ObjString, @fieldParentPtr("obj", field_name_val.obj)).*;
+                    const value_i = self.pop();
+                    const inst_val = self.pop();
+                    if (inst_val != .obj or inst_val.obj.type != .instance) {
+                        std.debug.print("OP_SET_FIELD expects instance\n", .{});
+                        return error.BadFieldAccess;
+                    }
+                    const inst = @as(*value.ObjInstance, @fieldParentPtr("obj", inst_val.obj));
+                    const field_idx = inst.ty.indexOf(field_name.chars) orelse {
+                        std.debug.print("Field '{s}' not found\n", .{field_name.chars});
+                        return error.FieldNotFound;
+                    };
+                    inst.fields.items[field_idx] = value_i;
+                    try self.push(value_i); // Assignment returns the value
+                },
+                .dup => {
+                    try self.push(self.peek(0));
+                },
+                .cast_to_trait => {
+                    const inst_val = self.pop();
+                    const trait_ty_val = self.pop();
+                    if (trait_ty_val != .obj or trait_ty_val.obj.type != .trait_type) {
+                        std.debug.print("OP_CAST_TO_TRAIT expects trait type\n", .{});
+                        return error.BadTraitType;
+                    }
+                    if (inst_val != .obj or inst_val.obj.type != .instance) {
+                        std.debug.print("OP_CAST_TO_TRAIT expects instance\n", .{});
+                        return error.BadInstanceType;
+                    }
+                    const trait_ty = @as(*value.ObjTraitType, @fieldParentPtr("obj", trait_ty_val.obj));
+                    const inst = @as(*value.ObjInstance, @fieldParentPtr("obj", inst_val.obj));
+                    const trait_inst = try value.ObjTraitInstance.init(self.allocator, trait_ty, inst);
+
+                    // Set vtable
+                    const type_name = inst.ty.name.chars;
+                    const trait_name = trait_ty.name.chars;
+                    for (trait_ty.method_names.items, 0..) |method_name, i| {
+                        const func_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_{s}", .{ type_name, trait_name, method_name });
+                        defer self.allocator.free(func_name);
+
+                        const func_name_obj = try value.ObjString.init(self.allocator, func_name);
+                        defer func_name_obj.deinit(self.allocator);
+                        if (self.globals.get(func_name_obj.chars)) |func_val| {
+                            if (func_val != .obj or func_val.obj.type != .function) {
+                                std.debug.print("Expected function for method {s}\n", .{method_name});
+                                return error.BadMethodFunction;
+                            }
+                            const func = @as(*value.ObjFunction, @fieldParentPtr("obj", func_val.obj));
+                            std.debug.print("bind method {s} arity={d}\n", .{ method_name, func.arity });
+                            const closure = try value.ObjClosure.init(self.allocator, func);
+                            trait_inst.vtable.items[i] = Value{ .obj = &closure.obj };
+                        } else {
+                            std.debug.print("Method {s} not implemented\n", .{method_name});
+                            return error.MethodNotImplemented;
+                        }
+                    }
+
+                    try self.push(Value{ .obj = &trait_inst.obj });
+                },
+                .invoke_trait => {
+                    const method_idx = self.readByte(frame);
+                    const arg_count = self.readByte(frame);
+
+                    // We want to transform the stack from:
+                    //   [ ..., trait_instance, arg1, ..., argN ]
+                    // to:
+                    //   [ ..., closure, self, arg1, ..., argN ]
+                    const base_index = self.stack.items.len - 1 - arg_count;
+
+                    const trait_inst_val = self.stack.items[base_index];
+                    if (trait_inst_val != .obj or trait_inst_val.obj.type != .trait_instance) {
+                        std.debug.print("OP_INVOKE_TRAIT expects trait instance\n", .{});
+                        return error.BadTraitInstance;
+                    }
+                    const trait_inst = @as(*value.ObjTraitInstance, @fieldParentPtr("obj", trait_inst_val.obj));
+
+                    if (method_idx >= trait_inst.vtable.items.len) {
+                        std.debug.print("Invalid method index {d}\n", .{method_idx});
+                        return error.InvalidMethodIndex;
+                    }
+                    const closure_val = trait_inst.vtable.items[method_idx];
+                    if (closure_val != .obj or closure_val.obj.type != .closure) {
+                        std.debug.print("Method not implemented\n", .{});
+                        return error.MethodNotImplemented;
+                    }
+
+                    const total_argc: u8 = arg_count + 1; // include self
+                    const self_val = Value{ .obj = &trait_inst.instance.obj };
+
+                    // Insert a slot for self after base_index
+                    try self.stack.append(Value{ .nil = {} });
+                    var j: usize = self.stack.items.len - 1;
+                    while (j > base_index + 1) : (j -= 1) {
+                        self.stack.items[j] = self.stack.items[j - 1];
+                    }
+
+                    // Place closure at base_index and self at base_index+1
+                    self.stack.items[base_index] = closure_val;
+                    self.stack.items[base_index + 1] = self_val;
+
+                    // Now use the standard call path; callee is at base_index
+                    if (!self.callValue(self.stack.items[base_index], total_argc)) {
+                        return error.CallError;
+                    }
+                    frame = &self.frames.items[self.frames.items.len - 1];
+                },
                 .get_upvalue => {
                     const idx = self.readByte(frame);
                     if (frame.closure) |cl| {
@@ -221,7 +354,7 @@ pub const VM = struct {
 
                     if (a == .number and b == .number) {
                         try self.push(Value{ .number = a.number + b.number });
-                    } else if (a.obj.type == .string and b.obj.type == .string) {
+                    } else if (a == .obj and b == .obj and a.obj.type == .string and b.obj.type == .string) {
                         const a_str = @as(*value.ObjString, @fieldParentPtr("obj", a.obj)).*;
                         const b_str = @as(*value.ObjString, @fieldParentPtr("obj", b.obj)).*;
 
@@ -230,8 +363,20 @@ pub const VM = struct {
 
                         const obj_str = try value.ObjString.init(self.allocator, combined);
                         try self.push(Value{ .obj = &obj_str.obj });
+                    } else if (a == .obj and a.obj.type == .string and b == .number) {
+                        const a_str = @as(*value.ObjString, @fieldParentPtr("obj", a.obj)).*;
+                        const combined = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ a_str.chars, b.number });
+                        defer self.allocator.free(combined);
+                        const obj_str = try value.ObjString.init(self.allocator, combined);
+                        try self.push(Value{ .obj = &obj_str.obj });
+                    } else if (a == .number and b == .obj and b.obj.type == .string) {
+                        const b_str = @as(*value.ObjString, @fieldParentPtr("obj", b.obj)).*;
+                        const combined = try std.fmt.allocPrint(self.allocator, "{d}{s}", .{ a.number, b_str.chars });
+                        defer self.allocator.free(combined);
+                        const obj_str = try value.ObjString.init(self.allocator, combined);
+                        try self.push(Value{ .obj = &obj_str.obj });
                     } else {
-                        std.debug.print("Operands must be two numbers or two strings\n", .{});
+                        std.debug.print("Operands must be two numbers or strings with a number\n", .{});
                         return error.OperandTypeMismatch;
                     }
                 },
@@ -289,7 +434,26 @@ pub const VM = struct {
                 },
                 .call => {
                     const arg_count = self.readByte(frame);
-                    if (!self.callValue(self.peek(arg_count), arg_count)) {
+                    const cal = self.peek(arg_count);
+                    if (cal == .obj) {
+                        switch (cal.obj.type) {
+                            .closure => {
+                                const cl = @as(*ObjClosure, @fieldParentPtr("obj", cal.obj));
+                                std.debug.print("call opcode: closure arity={d} argc={d}\n", .{ cl.function.arity, arg_count });
+                            },
+                            .function => {
+                                const fnp = @as(*ObjFunction, @fieldParentPtr("obj", cal.obj));
+                                std.debug.print("call opcode: function arity={d} argc={d}\n", .{ fnp.arity, arg_count });
+                            },
+                            .native => {
+                                std.debug.print("call opcode: native argc={d}\n", .{arg_count});
+                            },
+                            else => {
+                                std.debug.print("call opcode: non-callable type\n", .{});
+                            },
+                        }
+                    }
+                    if (!self.callValue(cal, arg_count)) {
                         return error.CallError;
                     }
                     frame = &self.frames.items[self.frames.items.len - 1];
@@ -353,6 +517,7 @@ pub const VM = struct {
                 .closure => {
                     const closure = @as(*ObjClosure, @fieldParentPtr("obj", obj));
                     const function = closure.function;
+                    std.debug.print("callValue: closure arity={d}, argc={d}\n", .{ function.arity, arg_count });
                     if (arg_count != function.*.arity) {
                         std.debug.print("Expected {d} arguments but got {d}\n", .{ function.arity, arg_count });
                         return false;
@@ -371,6 +536,7 @@ pub const VM = struct {
                 },
                 .function => {
                     const function = @as(*ObjFunction, @fieldParentPtr("obj", obj));
+                    std.debug.print("callValue: function arity={d}, argc={d}\n", .{ function.arity, arg_count });
                     if (arg_count != function.*.arity) {
                         std.debug.print("Expected {d} arguments but got {d}\n", .{ function.arity, arg_count });
                         return false;

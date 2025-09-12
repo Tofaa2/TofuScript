@@ -21,6 +21,15 @@ pub const OpCode = enum(u8) {
     set_upvalue,
     closure,
 
+    // Structs
+    new_instance,
+    get_field,
+    set_field,
+
+    // Traits
+    cast_to_trait,
+    invoke_trait,
+
     // Operations
     add,
     subtract,
@@ -47,6 +56,7 @@ pub const OpCode = enum(u8) {
     true,
     false,
     not,
+    dup,
 };
 
 pub const Chunk = struct {
@@ -110,6 +120,11 @@ pub const Chunk = struct {
             .get_upvalue => return self.byteInstruction("OP_GET_UPVALUE", offset),
             .set_upvalue => return self.byteInstruction("OP_SET_UPVALUE", offset),
             .closure => return self.closureInstruction("OP_CLOSURE", offset),
+            .new_instance => return self.simpleInstruction("OP_NEW_INSTANCE", offset),
+            .get_field => return self.constantInstruction("OP_GET_FIELD", offset),
+            .set_field => return self.constantInstruction("OP_SET_FIELD", offset),
+            .cast_to_trait => return self.simpleInstruction("OP_CAST_TO_TRAIT", offset),
+            .invoke_trait => return self.byteInstruction("OP_INVOKE_TRAIT", offset),
             .add => return self.simpleInstruction("OP_ADD", offset),
             .subtract => return self.simpleInstruction("OP_SUBTRACT", offset),
             .multiply => return self.simpleInstruction("OP_MULTIPLY", offset),
@@ -130,6 +145,7 @@ pub const Chunk = struct {
             .true => return self.simpleInstruction("OP_TRUE", offset),
             .false => return self.simpleInstruction("OP_FALSE", offset),
             .not => return self.simpleInstruction("OP_NOT", offset),
+            .dup => return self.simpleInstruction("OP_DUP", offset),
         }
     }
 

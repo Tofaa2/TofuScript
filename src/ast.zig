@@ -22,9 +22,16 @@ pub const NodeType = enum {
     return_stmt,
     break_stmt,
     continue_stmt,
+    // Structs
+    member_expr,
+    member_assign,
+    struct_lit,
     struct_decl,
     trait_decl,
     impl_decl,
+    // Traits runtime ops
+    trait_cast,
+    trait_invoke,
 };
 
 pub const LiteralValue = union(enum) {
@@ -32,6 +39,22 @@ pub const LiteralValue = union(enum) {
     string: []const u8,
     boolean: bool,
     nil,
+};
+
+pub const FieldInit = struct {
+    name: []const u8,
+    expr: *Node,
+};
+
+pub const MethodSig = struct {
+    name: []const u8,
+    params: std.ArrayList([]const u8),
+};
+
+pub const MethodImpl = struct {
+    name: []const u8,
+    params: std.ArrayList([]const u8),
+    body: *Node,
 };
 
 pub const Node = struct {
@@ -110,16 +133,42 @@ pub const Node = struct {
         },
         break_stmt: struct {},
         continue_stmt: struct {},
+        // member access and struct literals
+        member_expr: struct {
+            object: *Node,
+            field: []const u8,
+        },
+        member_assign: struct {
+            object: *Node,
+            field: []const u8,
+            value: *Node,
+        },
+        struct_lit: struct {
+            type_name: []const u8,
+            inits: std.ArrayList(FieldInit),
+        },
+        // declarations
         struct_decl: struct {
             name: []const u8,
             fields: std.ArrayList([]const u8),
         },
         trait_decl: struct {
             name: []const u8,
+            methods: std.ArrayList(MethodSig),
         },
         impl_decl: struct {
             trait_name: []const u8,
             type_name: []const u8,
+            methods: std.ArrayList(MethodImpl),
+        },
+        trait_cast: struct {
+            object: *Node,
+            trait_name: []const u8,
+        },
+        trait_invoke: struct {
+            target: *Node, // expected to be a trait_cast node
+            method: []const u8,
+            args: std.ArrayList(*Node),
         },
     };
 
@@ -190,16 +239,40 @@ pub const Node = struct {
             } },
             .break_stmt => node.data = .{ .break_stmt = .{} },
             .continue_stmt => node.data = .{ .continue_stmt = .{} },
+            .member_expr => node.data = .{ .member_expr = .{
+                .object = undefined,
+                .field = "",
+            } },
+            .member_assign => node.data = .{ .member_assign = .{
+                .object = undefined,
+                .field = "",
+                .value = undefined,
+            } },
+            .struct_lit => node.data = .{ .struct_lit = .{
+                .type_name = "",
+                .inits = std.ArrayList(FieldInit).init(allocator),
+            } },
             .struct_decl => node.data = .{ .struct_decl = .{
                 .name = "",
                 .fields = std.ArrayList([]const u8).init(allocator),
             } },
             .trait_decl => node.data = .{ .trait_decl = .{
                 .name = "",
+                .methods = std.ArrayList(MethodSig).init(allocator),
             } },
             .impl_decl => node.data = .{ .impl_decl = .{
                 .trait_name = "",
                 .type_name = "",
+                .methods = std.ArrayList(MethodImpl).init(allocator),
+            } },
+            .trait_cast => node.data = .{ .trait_cast = .{
+                .object = undefined,
+                .trait_name = "",
+            } },
+            .trait_invoke => node.data = .{ .trait_invoke = .{
+                .target = undefined,
+                .method = "",
+                .args = std.ArrayList(*Node).init(allocator),
             } },
         }
 
@@ -269,6 +342,23 @@ pub const Node = struct {
             },
             .break_stmt => {},
             .continue_stmt => {},
+            .member_expr => {
+                self.data.member_expr.object.deinit(allocator);
+                allocator.free(self.data.member_expr.field);
+            },
+            .member_assign => {
+                self.data.member_assign.object.deinit(allocator);
+                self.data.member_assign.value.deinit(allocator);
+                allocator.free(self.data.member_assign.field);
+            },
+            .struct_lit => {
+                for (self.data.struct_lit.inits.items) |fi| {
+                    allocator.free(fi.name);
+                    fi.expr.deinit(allocator);
+                }
+                self.data.struct_lit.inits.deinit();
+                allocator.free(self.data.struct_lit.type_name);
+            },
             .struct_decl => {
                 for (self.data.struct_decl.fields.items) |fname| {
                     allocator.free(fname);
@@ -278,10 +368,33 @@ pub const Node = struct {
             },
             .trait_decl => {
                 allocator.free(self.data.trait_decl.name);
+                for (self.data.trait_decl.methods.items) |method| {
+                    allocator.free(method.name);
+                    method.params.deinit();
+                }
+                self.data.trait_decl.methods.deinit();
             },
             .impl_decl => {
                 allocator.free(self.data.impl_decl.trait_name);
                 allocator.free(self.data.impl_decl.type_name);
+                for (self.data.impl_decl.methods.items) |method| {
+                    allocator.free(method.name);
+                    method.params.deinit();
+                    method.body.deinit(allocator);
+                }
+                self.data.impl_decl.methods.deinit();
+            },
+            .trait_cast => {
+                self.data.trait_cast.object.deinit(allocator);
+                allocator.free(self.data.trait_cast.trait_name);
+            },
+            .trait_invoke => {
+                self.data.trait_invoke.target.deinit(allocator);
+                for (self.data.trait_invoke.args.items) |arg| {
+                    arg.deinit(allocator);
+                }
+                self.data.trait_invoke.args.deinit();
+                allocator.free(self.data.trait_invoke.method);
             },
         }
         allocator.destroy(self);

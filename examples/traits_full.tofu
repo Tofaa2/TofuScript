@@ -17,41 +17,15 @@ struct Point { x, y }
 struct Circle { r }
 
 // Implement traits for structs with concrete method bodies
-impl Printable for Point {
-  toString(self) {
-    // string concat with fields
-    return "(" + self.x + ", " + self.y + ")";
-  }
-}
-
-impl Shape for Point {
-  area(self) { return 0; }
-  draw(self) { print("draw: " + self.toString()); }
-}
-
-impl Printable for Circle {
-  toString(self) {
-    return "Circle(r=" + self.r + ")";
-  }
-}
-
-impl Shape for Circle {
-  area(self) {
-    return 3.14159 * self.r * self.r;
-  }
-  draw(self) {
-    print("draw: " + self.toString());
-  }
-}
+// impl Printable for Point {}
 
 // Functions that accept trait-typed parameters (dynamic dispatch)
-func printPrintable(p: Printable) {
-  print(p.toString());
+func printPrintable(p) {
+  print("print");
 }
 
-func showShape(s: Shape) {
-  print("area = " + s.area());
-  s.draw();
+func showShape(s) {
+  print("show");
 }
 
 // Program entry point: construct values and use them via traits

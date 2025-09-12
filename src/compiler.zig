@@ -21,6 +21,9 @@ pub const Compiler = struct {
     loop_stack: std.ArrayList(LoopCtx),
     locals: std.ArrayList(Local),
     upvalues: std.ArrayList(Upvalue),
+    struct_types: std.StringHashMap(*value.ObjStructType),
+    trait_types: std.StringHashMap(*value.ObjTraitType),
+    impls: std.StringHashMap(std.StringHashMap(std.ArrayList(*ObjFunction))),
 
     const FunctionType = enum {
         function,
@@ -53,6 +56,9 @@ pub const Compiler = struct {
             .loop_stack = std.ArrayList(LoopCtx).init(allocator),
             .locals = std.ArrayList(Local).init(allocator),
             .upvalues = std.ArrayList(Upvalue).init(allocator),
+            .struct_types = std.StringHashMap(*value.ObjStructType).init(allocator),
+            .trait_types = std.StringHashMap(*value.ObjTraitType).init(allocator),
+            .impls = std.StringHashMap(std.StringHashMap(std.ArrayList(*ObjFunction))).init(allocator),
         };
         return compiler;
     }
@@ -72,6 +78,32 @@ pub const Compiler = struct {
         self.locals.deinit();
 
         self.upvalues.deinit();
+
+        // Free struct types
+        var iter = self.struct_types.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.*.deinit(self.allocator);
+        }
+        self.struct_types.deinit();
+
+        // Free trait types
+        var trait_iter = self.trait_types.iterator();
+        while (trait_iter.next()) |entry| {
+            entry.value_ptr.*.deinit(self.allocator);
+        }
+        self.trait_types.deinit();
+
+        // Free impls
+        var impl_iter = self.impls.iterator();
+        while (impl_iter.next()) |entry| {
+            var trait_map = entry.value_ptr.*;
+            var trait_iter2 = trait_map.iterator();
+            while (trait_iter2.next()) |entry2| {
+                entry2.value_ptr.deinit();
+            }
+            trait_map.deinit();
+        }
+        self.impls.deinit();
 
         self.function.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -423,13 +455,182 @@ pub const Compiler = struct {
                 try ctx_ref.continue_patches.append(jmp_off);
             },
             .struct_decl => {
-                trace.log("COMP", "struct {s} (fields={d}) - ignored by compiler in phase2", .{ node.data.struct_decl.name, node.data.struct_decl.fields.items.len });
+                const name = node.data.struct_decl.name;
+                const fields = node.data.struct_decl.fields.items;
+                const ty = try value.ObjStructType.init(self.allocator, name, fields);
+                try self.struct_types.put(try self.allocator.dupe(u8, name), ty);
+                // Store in globals
+                const ty_val = Value{ .obj = &ty.obj };
+                // push type object
+                try self.emitConstant(ty_val);
+                // define as global with name
+                try self.emitByte(@intFromEnum(OpCode.define_global));
+                const name_obj = try ObjString.init(self.allocator, name);
+                const name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &name_obj.obj });
+                if (name_index > 255) return error.TooManyConstants;
+                try self.emitByte(@intCast(name_index));
+            },
+            .member_expr => {
+                try self.compile(node.data.member_expr.object);
+                const field_name = node.data.member_expr.field;
+                const field_name_obj = try ObjString.init(self.allocator, field_name);
+                const field_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &field_name_obj.obj });
+                if (field_index > 255) return error.TooManyConstants;
+                try self.emitByte(@intFromEnum(OpCode.get_field));
+                try self.emitByte(@intCast(field_index));
+            },
+            .member_assign => {
+                // VM expects stack as [ ..., instance, value ] before OP_SET_FIELD
+                try self.compile(node.data.member_assign.object);
+                try self.compile(node.data.member_assign.value);
+                const field_name = node.data.member_assign.field;
+                const field_name_obj = try ObjString.init(self.allocator, field_name);
+                const field_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &field_name_obj.obj });
+                if (field_index > 255) return error.TooManyConstants;
+                try self.emitByte(@intFromEnum(OpCode.set_field));
+                try self.emitByte(@intCast(field_index));
+            },
+            .struct_lit => {
+                const type_name = node.data.struct_lit.type_name;
+                // Get the type from globals
+                const type_name_obj = try ObjString.init(self.allocator, type_name);
+                const type_name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &type_name_obj.obj });
+                if (type_name_index > 255) return error.TooManyConstants;
+                try self.emitByte(@intFromEnum(OpCode.get_global));
+                try self.emitByte(@intCast(type_name_index));
+                // Now type is on stack
+                try self.emitByte(@intFromEnum(OpCode.new_instance));
+                // For each field init
+                for (node.data.struct_lit.inits.items) |fi| {
+                    // Dup instance so we can set a field without losing the original
+                    try self.emitByte(@intFromEnum(OpCode.dup));
+                    // Compile value
+                    try self.compile(fi.expr);
+                    // Set field (stack expects [ ..., instance, value ])
+                    const field_name_obj = try ObjString.init(self.allocator, fi.name);
+                    const field_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &field_name_obj.obj });
+                    if (field_index > 255) return error.TooManyConstants;
+                    try self.emitByte(@intFromEnum(OpCode.set_field));
+                    try self.emitByte(@intCast(field_index));
+                    // set_field pushes the assigned value; pop it to keep the instance on top for subsequent fields
+                    try self.emitByte(@intFromEnum(OpCode.pop));
+                }
             },
             .trait_decl => {
-                trace.log("COMP", "trait {s} - ignored by compiler in phase2", .{node.data.trait_decl.name});
+                const name = node.data.trait_decl.name;
+                var methods = std.ArrayList([]const u8).init(self.allocator);
+                defer methods.deinit();
+                for (node.data.trait_decl.methods.items) |method| {
+                    try methods.append(method.name);
+                }
+                const ty = try value.ObjTraitType.init(self.allocator, name, methods.items);
+                try self.trait_types.put(try self.allocator.dupe(u8, name), ty);
+                // Store in globals
+                const ty_val = Value{ .obj = &ty.obj };
+                try self.emitConstant(ty_val);
+                try self.emitByte(@intFromEnum(OpCode.define_global));
+                const name_obj = try ObjString.init(self.allocator, name);
+                const name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &name_obj.obj });
+                if (name_index > 255) return error.TooManyConstants;
+                try self.emitByte(@intCast(name_index));
             },
             .impl_decl => {
-                trace.log("COMP", "impl {s} for {s} - ignored by compiler in phase2", .{ node.data.impl_decl.trait_name, node.data.impl_decl.type_name });
+                const trait_name = node.data.impl_decl.trait_name;
+                const type_name = node.data.impl_decl.type_name;
+                const methods = node.data.impl_decl.methods;
+
+                // Get or create the trait map
+                var trait_map = self.impls.get(type_name) orelse blk: {
+                    const new_map = std.StringHashMap(std.ArrayList(*ObjFunction)).init(self.allocator);
+                    try self.impls.put(try self.allocator.dupe(u8, type_name), new_map);
+                    break :blk new_map;
+                };
+
+                var func_list = std.ArrayList(*ObjFunction).init(self.allocator);
+                for (methods.items) |method| {
+                    // Compile method as function
+                    const method_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_{s}", .{ type_name, trait_name, method.name });
+                    defer self.allocator.free(method_name);
+
+                    var compiler = try Compiler.init(self.allocator, .function);
+                    compiler.enclosing = self;
+                    const func_name_obj = try ObjString.init(self.allocator, method_name);
+                    compiler.function.name = func_name_obj;
+
+                    // Add self parameter first (implicit)
+                    compiler.beginScope();
+                    try compiler.declareVariable("self");
+                    try compiler.defineVariable("self");
+                    compiler.function.arity = 1; // count 'self'
+
+                    // Add other params (skip explicit 'self' if present in signature)
+                    for (method.params.items) |param| {
+                        if (!std.mem.eql(u8, param, "self")) {
+                            try compiler.declareVariable(param);
+                            try compiler.defineVariable(param);
+                            compiler.function.arity += 1;
+                        }
+                    }
+
+                    try compiler.compile(method.body);
+                    try compiler.emitReturn();
+
+                    compiler.function.upvalue_count = @intCast(compiler.upvalues.items.len);
+
+                    try func_list.append(compiler.function);
+
+                    // Define as global
+                    try self.emitConstant(Value{ .obj = &compiler.function.obj });
+                    try self.emitByte(@intFromEnum(OpCode.define_global));
+                    const name_obj = try ObjString.init(self.allocator, method_name);
+                    const name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &name_obj.obj });
+                    if (name_index > 255) return error.TooManyConstants;
+                    try self.emitByte(@intCast(name_index));
+
+                    // Do not deinit nested compiler here; function object must remain alive.
+                    // compiler.deinit();
+                }
+
+                try trait_map.put(try self.allocator.dupe(u8, trait_name), func_list);
+            },
+            .trait_cast => {
+                // Stack contract for OP_CAST_TO_TRAIT (in VM):
+                // expects [ ... , trait_type, instance ] then pops both and pushes trait_instance.
+                // Emit: GET_GLOBAL trait_name; then compile object; then OP_CAST_TO_TRAIT.
+                const trait_name = node.data.trait_cast.trait_name;
+                try self.emitByte(@intFromEnum(OpCode.get_global));
+                const name_obj = try ObjString.init(self.allocator, trait_name);
+                const name_index: u24 = try self.function.chunk.addConstant(Value{ .obj = &name_obj.obj });
+                if (name_index > 255) return error.TooManyConstants;
+                try self.emitByte(@intCast(name_index));
+
+                try self.compile(node.data.trait_cast.object);
+
+                try self.emitByte(@intFromEnum(OpCode.cast_to_trait));
+            },
+            .trait_invoke => {
+                // Compile target (should evaluate to a trait_instance on stack),
+                // then push args, then emit OP_INVOKE_TRAIT method_idx, argc.
+                try self.compile(node.data.trait_invoke.target);
+
+                // Determine method index from the trait referenced in the target cast
+                const target_cast = node.data.trait_invoke.target.data.trait_cast;
+                const trait_name = target_cast.trait_name;
+
+                const trait_ty_ptr = self.getTraitType(trait_name) orelse return error.TraitNotFound;
+                const method_idx_usize = trait_ty_ptr.methodIndex(node.data.trait_invoke.method) orelse return error.MethodNotFound;
+                if (method_idx_usize > std.math.maxInt(u8)) return error.TooManyMethods;
+                const method_idx: u8 = @intCast(method_idx_usize);
+
+                // Compile arguments
+                for (node.data.trait_invoke.args.items) |arg| {
+                    try self.compile(arg);
+                }
+                const argc: u8 = @intCast(node.data.trait_invoke.args.items.len);
+
+                try self.emitByte(@intFromEnum(OpCode.invoke_trait));
+                try self.emitByte(method_idx);
+                try self.emitByte(argc);
             },
         }
     }
@@ -570,6 +771,15 @@ pub const Compiler = struct {
             if (enc.resolveUpvalue(name)) |up_idx| {
                 return self.addUpvalue(up_idx, false) catch null;
             }
+        }
+        return null;
+    }
+
+    fn getTraitType(self: *Compiler, name: []const u8) ?*value.ObjTraitType {
+        var c: ?*Compiler = self;
+        while (c) |comp| {
+            if (comp.trait_types.get(name)) |tt| return tt;
+            c = comp.enclosing;
         }
         return null;
     }

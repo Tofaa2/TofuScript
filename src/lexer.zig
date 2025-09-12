@@ -45,6 +45,7 @@ pub const Lexer = struct {
             '+' => try self.addToken(token_list, TokenType.plus),
             ';' => try self.addToken(token_list, TokenType.semicolon),
             '*' => try self.addToken(token_list, TokenType.star),
+            ':' => try self.addToken(token_list, TokenType.colon),
             '!' => try self.addToken(token_list, if (self.match('=')) TokenType.bang_equal else TokenType.bang),
             '=' => try self.addToken(token_list, if (self.match('=')) TokenType.equal_equal else TokenType.equal),
             '<' => try self.addToken(token_list, if (self.match('=')) TokenType.less_equal else TokenType.less),
@@ -77,7 +78,7 @@ pub const Lexer = struct {
 
         const text = self.source[self.start..self.current];
         const token_type =
-            if (std.mem.eql(u8, text, "func")) TokenType.func else if (std.mem.eql(u8, text, "var")) TokenType.@"var" else if (std.mem.eql(u8, text, "if")) TokenType.@"if" else if (std.mem.eql(u8, text, "else")) TokenType.@"else" else if (std.mem.eql(u8, text, "return")) TokenType.@"return" else if (std.mem.eql(u8, text, "true")) TokenType.true else if (std.mem.eql(u8, text, "false")) TokenType.false else if (std.mem.eql(u8, text, "nil")) TokenType.nil else if (std.mem.eql(u8, text, "and")) TokenType.@"and" else if (std.mem.eql(u8, text, "or")) TokenType.@"or" else if (std.mem.eql(u8, text, "while")) TokenType.@"while" else if (std.mem.eql(u8, text, "for")) TokenType.@"for" else if (std.mem.eql(u8, text, "break")) TokenType.@"break" else if (std.mem.eql(u8, text, "continue")) TokenType.@"continue" else if (std.mem.eql(u8, text, "print")) TokenType.print else if (std.mem.eql(u8, text, "import")) TokenType.import else if (std.mem.eql(u8, text, "struct")) TokenType.@"struct" else if (std.mem.eql(u8, text, "trait")) TokenType.trait else if (std.mem.eql(u8, text, "impl")) TokenType.impl else TokenType.identifier;
+            if (std.mem.eql(u8, text, "func")) TokenType.func else if (std.mem.eql(u8, text, "var")) TokenType.@"var" else if (std.mem.eql(u8, text, "if")) TokenType.@"if" else if (std.mem.eql(u8, text, "else")) TokenType.@"else" else if (std.mem.eql(u8, text, "return")) TokenType.@"return" else if (std.mem.eql(u8, text, "true")) TokenType.true else if (std.mem.eql(u8, text, "false")) TokenType.false else if (std.mem.eql(u8, text, "nil")) TokenType.nil else if (std.mem.eql(u8, text, "and")) TokenType.@"and" else if (std.mem.eql(u8, text, "or")) TokenType.@"or" else if (std.mem.eql(u8, text, "while")) TokenType.@"while" else if (std.mem.eql(u8, text, "for")) TokenType.@"for" else if (std.mem.eql(u8, text, "break")) TokenType.@"break" else if (std.mem.eql(u8, text, "continue")) TokenType.@"continue" else if (std.mem.eql(u8, text, "print")) TokenType.print else if (std.mem.eql(u8, text, "import")) TokenType.import else if (std.mem.eql(u8, text, "struct")) TokenType.@"struct" else if (std.mem.eql(u8, text, "trait")) TokenType.trait else if (std.mem.eql(u8, text, "impl")) TokenType.impl else if (std.mem.eql(u8, text, "as")) TokenType.as else TokenType.identifier;
 
         try self.addToken(token_list, token_type);
     }

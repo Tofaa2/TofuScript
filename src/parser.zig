@@ -126,7 +126,32 @@ pub const Parser = struct {
         const name_tok = try self.consume(.identifier, "Expect trait name");
         const node = try Node.init(self.allocator, .trait_decl);
         node.data.trait_decl.name = try self.allocator.dupe(u8, name_tok.lexeme);
-        _ = try self.consume(.semicolon, "Expect ';' after trait");
+
+        _ = try self.consume(.left_brace, "Expect '{' after trait name");
+        while (!self.check(.right_brace) and !self.isAtEnd()) {
+            const method_name_tok = try self.consume(.identifier, "Expect method name");
+            const method_name = try self.allocator.dupe(u8, method_name_tok.lexeme);
+            _ = try self.consume(.left_paren, "Expect '(' after method name");
+
+            var params = std.ArrayList([]const u8).init(self.allocator);
+            if (!self.check(.right_paren)) {
+                while (true) {
+                    const param_tok = try self.consume(.identifier, "Expect parameter name");
+                    const param_name = try self.allocator.dupe(u8, param_tok.lexeme);
+                    try params.append(param_name);
+                    if (!self.match(.comma)) break;
+                }
+            }
+            _ = try self.consume(.right_paren, "Expect ')' after parameters");
+            _ = try self.consume(.semicolon, "Expect ';' after method signature");
+
+            const method_sig = ast.MethodSig{
+                .name = method_name,
+                .params = params,
+            };
+            try node.data.trait_decl.methods.append(method_sig);
+        }
+        _ = try self.consume(.right_brace, "Expect '}' after trait methods");
         return node;
     }
 
@@ -137,7 +162,35 @@ pub const Parser = struct {
         const node = try Node.init(self.allocator, .impl_decl);
         node.data.impl_decl.trait_name = try self.allocator.dupe(u8, trait_tok.lexeme);
         node.data.impl_decl.type_name = try self.allocator.dupe(u8, type_tok.lexeme);
-        _ = try self.consume(.semicolon, "Expect ';' after impl");
+
+        _ = try self.consume(.left_brace, "Expect '{' after impl type");
+        while (!self.check(.right_brace) and !self.isAtEnd()) {
+            const method_name_tok = try self.consume(.identifier, "Expect method name");
+            const method_name = try self.allocator.dupe(u8, method_name_tok.lexeme);
+            _ = try self.consume(.left_paren, "Expect '(' after method name");
+
+            var params = std.ArrayList([]const u8).init(self.allocator);
+            if (!self.check(.right_paren)) {
+                while (true) {
+                    const param_tok = try self.consume(.identifier, "Expect parameter name");
+                    const param_name = try self.allocator.dupe(u8, param_tok.lexeme);
+                    try params.append(param_name);
+                    if (!self.match(.comma)) break;
+                }
+            }
+            _ = try self.consume(.right_paren, "Expect ')' after parameters");
+            // Parse method body: require a '{' then delegate to blockStatement
+            _ = try self.consume(.left_brace, "Expect '{' before method body");
+            const body = try self.blockStatement();
+
+            const method_impl = ast.MethodImpl{
+                .name = method_name,
+                .params = params,
+                .body = body,
+            };
+            try node.data.impl_decl.methods.append(method_impl);
+        }
+        _ = try self.consume(.right_brace, "Expect '}' after impl methods");
         return node;
     }
 
@@ -257,6 +310,14 @@ pub const Parser = struct {
                 assign_node.data.assignment.name = try self.allocator.dupe(u8, expr.data.identifier.name);
                 assign_node.data.assignment.value = value;
                 return assign_node;
+            } else if (expr.type == .member_expr) {
+                // Support assignments like: object.field = value;
+                const member_assign = try Node.init(self.allocator, .member_assign);
+                // Reuse the parsed object expression; duplicate the field name
+                member_assign.data.member_assign.object = expr.data.member_expr.object;
+                member_assign.data.member_assign.field = try self.allocator.dupe(u8, expr.data.member_expr.field);
+                member_assign.data.member_assign.value = value;
+                return member_assign;
             }
 
             // Error: Invalid assignment target
@@ -360,6 +421,41 @@ pub const Parser = struct {
         while (true) {
             if (self.match(.left_paren)) {
                 expr = try self.finishCall(expr);
+            } else if (self.match(.as)) {
+                // Trait cast: expr as TraitName
+                const trait_tok = try self.consume(.identifier, "Expect trait name after 'as'");
+                const cast_node = try Node.init(self.allocator, .trait_cast);
+                cast_node.data.trait_cast.object = expr;
+                cast_node.data.trait_cast.trait_name = try self.allocator.dupe(u8, trait_tok.lexeme);
+                expr = cast_node;
+            } else if (self.match(.dot)) {
+                // Member access or trait method call
+                const name_tok = try self.consume(.identifier, "Expect field or method name after '.'");
+
+                // If immediately followed by '(', and the target is a trait_cast, parse as trait method call
+                if (expr.type == .trait_cast and self.check(.left_paren)) {
+                    _ = try self.consume(.left_paren, "Expect '(' after method name");
+
+                    const invoke_node = try Node.init(self.allocator, .trait_invoke);
+                    invoke_node.data.trait_invoke.target = expr;
+                    invoke_node.data.trait_invoke.method = try self.allocator.dupe(u8, name_tok.lexeme);
+
+                    if (!self.check(.right_paren)) {
+                        while (true) {
+                            try invoke_node.data.trait_invoke.args.append(try self.expression());
+                            if (!self.match(.comma)) break;
+                        }
+                    }
+                    _ = try self.consume(.right_paren, "Expect ')' after arguments");
+
+                    expr = invoke_node;
+                } else {
+                    // Regular struct field access chaining
+                    const member = try Node.init(self.allocator, .member_expr);
+                    member.data.member_expr.object = expr;
+                    member.data.member_expr.field = try self.allocator.dupe(u8, name_tok.lexeme);
+                    expr = member;
+                }
             } else {
                 break;
             }
@@ -392,6 +488,28 @@ pub const Parser = struct {
         return call_node;
     }
 
+    fn structLiteral(self: *Parser, type_name_tok: Token) anyerror!*Node {
+        const node = try Node.init(self.allocator, .struct_lit);
+        node.data.struct_lit.type_name = try self.allocator.dupe(u8, type_name_tok.lexeme);
+
+        _ = try self.consume(.left_brace, "Expect '{' after struct type name");
+        if (!self.check(.right_brace)) {
+            while (true) {
+                const field_tok = try self.consume(.identifier, "Expect field name in struct literal");
+                _ = try self.consume(.colon, "Expect ':' after field name");
+                const expr = try self.expression();
+                const fi = ast.FieldInit{
+                    .name = try self.allocator.dupe(u8, field_tok.lexeme),
+                    .expr = expr,
+                };
+                try node.data.struct_lit.inits.append(fi);
+                if (!self.match(.comma)) break;
+            }
+        }
+        _ = try self.consume(.right_brace, "Expect '}' to close struct literal");
+        return node;
+    }
+
     fn primary(self: *Parser) anyerror!*Node {
         if (self.match(.false)) {
             const literal = try Node.init(self.allocator, .literal);
@@ -422,9 +540,26 @@ pub const Parser = struct {
             return literal;
         }
         if (self.match(.identifier)) {
-            const ident = try Node.init(self.allocator, .identifier);
-            ident.data.identifier.name = try self.allocator.dupe(u8, self.previous().lexeme);
-            return ident;
+            const ident_tok = self.previous();
+
+            // Struct literal syntax: TypeName { ... }
+            if (self.check(.left_brace)) {
+                return try self.structLiteral(ident_tok);
+            }
+
+            // Start with an identifier expression
+            var expr = try Node.init(self.allocator, .identifier);
+            expr.data.identifier.name = try self.allocator.dupe(u8, ident_tok.lexeme);
+
+            // Support chained member access: a.b.c
+            while (self.match(.dot)) {
+                const field_tok = try self.consume(.identifier, "Expect field name after '.'");
+                const member = try Node.init(self.allocator, .member_expr);
+                member.data.member_expr.object = expr;
+                member.data.member_expr.field = try self.allocator.dupe(u8, field_tok.lexeme);
+                expr = member;
+            }
+            return expr;
         }
         if (self.match(.left_paren)) {
             const expr = try self.expression();

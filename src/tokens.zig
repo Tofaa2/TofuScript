@@ -13,6 +13,7 @@ pub const TokenType = enum {
     semicolon,
     slash,
     star,
+    colon,
 
     // One or two character tokens
     bang,
@@ -52,6 +53,7 @@ pub const TokenType = enum {
     @"struct",
     trait,
     impl,
+    as,
 
     eof,
 };
