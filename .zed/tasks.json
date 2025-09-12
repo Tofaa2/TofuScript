@@ -1,0 +1,7 @@
+[
+  {
+    "label": "Build And Run",
+    "command": "zig build run",
+    "allow_concurrent_runs": false
+  }
+]
