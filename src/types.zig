@@ -15,7 +15,7 @@ pub const Builtin = enum {
 pub const Type = union(enum) {
     builtin: Builtin,
     user: []const u8, // nominal user type name (struct or trait by name)
-    function: FunctionSig,
+    function: *const FunctionSig,
     unknown,
 
     pub fn format(self: Type, writer: anytype) !void {
@@ -23,14 +23,15 @@ pub const Type = union(enum) {
             .builtin => |b| try writer.print("{s}", .{builtinName(b)}),
             .user => |n| try writer.print("{s}", .{n}),
             .function => |f| {
+                const fs = f.*;
                 try writer.print("func(", .{});
                 var i: usize = 0;
-                while (i < f.param_types.len) : (i += 1) {
-                    try f.param_types[i].format(writer);
-                    if (i + 1 < f.param_types.len) try writer.print(", ", .{});
+                while (i < fs.param_types.len) : (i += 1) {
+                    try fs.param_types[i].*.format(writer);
+                    if (i + 1 < fs.param_types.len) try writer.print(", ", .{});
                 }
                 try writer.print("): ", .{});
-                try f.return_type.format(writer);
+                try fs.return_type.*.format(writer);
             },
             .unknown => try writer.print("Unknown", .{}),
         }
@@ -41,7 +42,7 @@ pub const Type = union(enum) {
         return switch (a) {
             .builtin => |ab| ab == b.builtin,
             .user => |an| std.mem.eql(u8, an, b.user),
-            .function => |af| fnEquals(af, b.function),
+            .function => |af| fnEqualsPtr(af, b.function),
             .unknown => true, // Unknown equals Unknown
         };
     }
@@ -66,8 +67,8 @@ pub const Type = union(enum) {
 };
 
 pub const FunctionSig = struct {
-    param_types: []const Type,
-    return_type: Type,
+    param_types: []const *const Type,
+    return_type: *const Type,
 };
 
 pub const Mode = enum { strict, loose };
@@ -148,17 +149,31 @@ pub fn typeToString(allocator: std.mem.Allocator, t: Type) ![]const u8 {
 
 /// Construct a function type with copied param array
 pub fn makeFunctionType(allocator: std.mem.Allocator, params: []const Type, ret: Type) !Type {
-    const copied = try allocator.alloc(Type, params.len);
-    std.mem.copy(Type, copied, params);
-    return Type{ .function = .{ .param_types = copied, .return_type = ret } };
+    // Allocate copies of param types and store pointers
+    const param_ptrs = try allocator.alloc(*const Type, params.len);
+    var i: usize = 0;
+    while (i < params.len) : (i += 1) {
+        const tp = try allocator.create(Type);
+        tp.* = params[i];
+        param_ptrs[i] = tp;
+    }
+    // Allocate copy of return type
+    const ret_ptr = try allocator.create(Type);
+    ret_ptr.* = ret;
+
+    // Allocate the function signature
+    const sig = try allocator.create(FunctionSig);
+    sig.* = .{ .param_types = param_ptrs, .return_type = ret_ptr };
+
+    return Type{ .function = sig };
 }
 
-fn fnEquals(a: FunctionSig, b: FunctionSig) bool {
+fn fnEqualsPtr(a: *const FunctionSig, b: *const FunctionSig) bool {
     if (a.param_types.len != b.param_types.len) return false;
-    if (!Type.equals(a.return_type, b.return_type)) return false;
+    if (!Type.equals(a.return_type.*, b.return_type.*)) return false;
     var i: usize = 0;
     while (i < a.param_types.len) : (i += 1) {
-        if (!Type.equals(a.param_types[i], b.param_types[i])) return false;
+        if (!Type.equals(a.param_types[i].*, b.param_types[i].*)) return false;
     }
     return true;
 }
