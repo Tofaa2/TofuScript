@@ -65,17 +65,6 @@ Virtual machine:
 - Strings support concatenation; interning is not yet implemented.
 - Control flow: supports conditional jumps, loops, and correct break/continue behavior consistent with compiler lowering.
 
-Codebase layout:
-- [src/lexer.zig](src/lexer.zig)
-- [src/tokens.zig](src/tokens.zig)
-- [src/parser.zig](src/parser.zig)
-- [src/ast.zig](src/ast.zig)
-- [src/compiler.zig](src/compiler.zig)
-- [src/bytecode.zig](src/bytecode.zig)
-- [src/value.zig](src/value.zig)
-- [src/vm.zig](src/vm.zig)
-- [src/main.zig](src/main.zig)
-
 ## Architecture
 
 TofuScript follows a traditional pipeline:
