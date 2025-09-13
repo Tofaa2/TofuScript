@@ -122,7 +122,7 @@ Phase 2 — (Complete) Scoping and closures:
 - Introduction of structs, traits and trait implementation for structs.
 - Closure objects and upvalue capture semantics.
 
-Phase 2.5 — Static type system foundations:
+Phase 2.5 (Complete) — Static type system foundations:
 - Syntax: explicit type annotations for variables, parameters, returns, struct fields. Examples:
   - var x: Number = 42;
   - func len(a: String): Number { ... }
