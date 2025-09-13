@@ -49,11 +49,19 @@ pub const FieldInit = struct {
 pub const MethodSig = struct {
     name: []const u8,
     params: std.ArrayList([]const u8),
+    // Optional types for each param (same length as params). Null means no annotation.
+    param_types: std.ArrayList(?[]const u8),
+    // Optional return type annotation for trait method
+    return_type: ?[]const u8,
 };
 
 pub const MethodImpl = struct {
     name: []const u8,
     params: std.ArrayList([]const u8),
+    // Optional types for each parameter; same length as params. Null means no annotation.
+    param_types: std.ArrayList(?[]const u8),
+    // Optional return type annotation for impl method
+    return_type: ?[]const u8,
     body: *Node,
 };
 
@@ -70,10 +78,16 @@ pub const Node = struct {
         function_decl: struct {
             name: []const u8,
             params: std.ArrayList([]const u8),
+            // Optional types for each parameter (aligned with params by index)
+            param_types: std.ArrayList(?[]const u8),
+            // Optional return type annotation
+            return_type: ?[]const u8,
             body: *Node, // block statement
         },
         variable_decl: struct {
             name: []const u8,
+            // Optional declared type (strict mode will require type or initializer)
+            declared_type: ?[]const u8,
             value: ?*Node, // optional initializer
         },
         assignment: struct {
@@ -151,6 +165,8 @@ pub const Node = struct {
         struct_decl: struct {
             name: []const u8,
             fields: std.ArrayList([]const u8),
+            // Optional types per field (same length as fields). Null means no annotation.
+            field_types: std.ArrayList(?[]const u8),
         },
         trait_decl: struct {
             name: []const u8,
@@ -182,10 +198,13 @@ pub const Node = struct {
             .function_decl => node.data = .{ .function_decl = .{
                 .name = "",
                 .params = std.ArrayList([]const u8).init(allocator),
+                .param_types = std.ArrayList(?[]const u8).init(allocator),
+                .return_type = null,
                 .body = undefined,
             } },
             .variable_decl => node.data = .{ .variable_decl = .{
                 .name = "",
+                .declared_type = null,
                 .value = null,
             } },
             .assignment => node.data = .{ .assignment = .{
@@ -255,6 +274,7 @@ pub const Node = struct {
             .struct_decl => node.data = .{ .struct_decl = .{
                 .name = "",
                 .fields = std.ArrayList([]const u8).init(allocator),
+                .field_types = std.ArrayList(?[]const u8).init(allocator),
             } },
             .trait_decl => node.data = .{ .trait_decl = .{
                 .name = "",
@@ -284,10 +304,19 @@ pub const Node = struct {
             .program => self.data.program.body.deinit(),
             .function_decl => {
                 self.data.function_decl.params.deinit();
+                // free any allocated param type strings
+                for (self.data.function_decl.param_types.items) |pt| {
+                    if (pt) |s| allocator.free(s);
+                }
+                self.data.function_decl.param_types.deinit();
+                if (self.data.function_decl.return_type) |rt| allocator.free(rt);
                 self.data.function_decl.body.deinit(allocator);
             },
-            .variable_decl => if (self.data.variable_decl.value) |value| {
-                value.deinit(allocator);
+            .variable_decl => {
+                if (self.data.variable_decl.value) |value| {
+                    value.deinit(allocator);
+                }
+                if (self.data.variable_decl.declared_type) |dt| allocator.free(dt);
             },
             .assignment => self.data.assignment.value.deinit(allocator),
             .binary_expr => {
@@ -364,6 +393,11 @@ pub const Node = struct {
                     allocator.free(fname);
                 }
                 self.data.struct_decl.fields.deinit();
+                // free any field type strings
+                for (self.data.struct_decl.field_types.items) |ft| {
+                    if (ft) |s| allocator.free(s);
+                }
+                self.data.struct_decl.field_types.deinit();
                 allocator.free(self.data.struct_decl.name);
             },
             .trait_decl => {
@@ -371,6 +405,12 @@ pub const Node = struct {
                 for (self.data.trait_decl.methods.items) |method| {
                     allocator.free(method.name);
                     method.params.deinit();
+                    // free param type strings
+                    for (method.param_types.items) |pt| {
+                        if (pt) |s| allocator.free(s);
+                    }
+                    method.param_types.deinit();
+                    if (method.return_type) |rt| allocator.free(rt);
                 }
                 self.data.trait_decl.methods.deinit();
             },
@@ -380,6 +420,12 @@ pub const Node = struct {
                 for (self.data.impl_decl.methods.items) |method| {
                     allocator.free(method.name);
                     method.params.deinit();
+                    // free param type strings if any
+                    for (method.param_types.items) |pt| {
+                        if (pt) |s| allocator.free(s);
+                    }
+                    method.param_types.deinit();
+                    if (method.return_type) |rt| allocator.free(rt);
                     method.body.deinit(allocator);
                 }
                 self.data.impl_decl.methods.deinit();

@@ -70,12 +70,19 @@ pub const Parser = struct {
 
         _ = try self.consume(.left_paren, "Expect '(' after function name");
 
-        // Parse parameters
+        // Parse parameters with optional type annotations: a: Type
         if (!self.check(.right_paren)) {
             while (true) {
-                const param = try self.consume(.identifier, "Expect parameter name");
-                const param_name = try self.allocator.dupe(u8, param.lexeme);
+                const param_tok = try self.consume(.identifier, "Expect parameter name");
+                const param_name = try self.allocator.dupe(u8, param_tok.lexeme);
                 try func_node.data.function_decl.params.append(param_name);
+
+                var param_type: ?[]const u8 = null;
+                if (self.match(.colon)) {
+                    const ty_tok = try self.consume(.identifier, "Expect type name after ':'");
+                    param_type = try self.allocator.dupe(u8, ty_tok.lexeme);
+                }
+                try func_node.data.function_decl.param_types.append(param_type);
 
                 if (!self.match(.comma)) {
                     break;
@@ -84,6 +91,15 @@ pub const Parser = struct {
         }
 
         _ = try self.consume(.right_paren, "Expect ')' after parameters");
+
+        // Optional return type: : Type
+        if (self.match(.colon)) {
+            const rt_tok = try self.consume(.identifier, "Expect return type after ':'");
+            func_node.data.function_decl.return_type = try self.allocator.dupe(u8, rt_tok.lexeme);
+        } else {
+            func_node.data.function_decl.return_type = null;
+        }
+
         _ = try self.consume(.left_brace, "Expect '{' before function body");
 
         // Parse function body
@@ -113,6 +129,15 @@ pub const Parser = struct {
                 const field_tok = try self.consume(.identifier, "Expect field name");
                 const fname = try self.allocator.dupe(u8, field_tok.lexeme);
                 try node.data.struct_decl.fields.append(fname);
+
+                // Optional field type annotation: field: Type
+                var ftype: ?[]const u8 = null;
+                if (self.match(.colon)) {
+                    const ty_tok = try self.consume(.identifier, "Expect field type after ':'");
+                    ftype = try self.allocator.dupe(u8, ty_tok.lexeme);
+                }
+                try node.data.struct_decl.field_types.append(ftype);
+
                 if (!self.match(.comma)) break;
             }
         }
@@ -134,20 +159,38 @@ pub const Parser = struct {
             _ = try self.consume(.left_paren, "Expect '(' after method name");
 
             var params = std.ArrayList([]const u8).init(self.allocator);
+            var param_types = std.ArrayList(?[]const u8).init(self.allocator);
             if (!self.check(.right_paren)) {
                 while (true) {
                     const param_tok = try self.consume(.identifier, "Expect parameter name");
                     const param_name = try self.allocator.dupe(u8, param_tok.lexeme);
                     try params.append(param_name);
+
+                    var ptype: ?[]const u8 = null;
+                    if (self.match(.colon)) {
+                        const ty_tok = try self.consume(.identifier, "Expect parameter type after ':'");
+                        ptype = try self.allocator.dupe(u8, ty_tok.lexeme);
+                    }
+                    try param_types.append(ptype);
+
                     if (!self.match(.comma)) break;
                 }
             }
             _ = try self.consume(.right_paren, "Expect ')' after parameters");
+
+            // Optional return type
+            var ret_type: ?[]const u8 = null;
+            if (self.match(.colon)) {
+                const rt_tok = try self.consume(.identifier, "Expect return type after ':'");
+                ret_type = try self.allocator.dupe(u8, rt_tok.lexeme);
+            }
             _ = try self.consume(.semicolon, "Expect ';' after method signature");
 
             const method_sig = ast.MethodSig{
                 .name = method_name,
                 .params = params,
+                .param_types = param_types,
+                .return_type = ret_type,
             };
             try node.data.trait_decl.methods.append(method_sig);
         }
@@ -170,15 +213,32 @@ pub const Parser = struct {
             _ = try self.consume(.left_paren, "Expect '(' after method name");
 
             var params = std.ArrayList([]const u8).init(self.allocator);
+            var param_types = std.ArrayList(?[]const u8).init(self.allocator);
             if (!self.check(.right_paren)) {
                 while (true) {
                     const param_tok = try self.consume(.identifier, "Expect parameter name");
                     const param_name = try self.allocator.dupe(u8, param_tok.lexeme);
                     try params.append(param_name);
+
+                    var ptype: ?[]const u8 = null;
+                    if (self.match(.colon)) {
+                        const ty_tok = try self.consume(.identifier, "Expect parameter type after ':'");
+                        ptype = try self.allocator.dupe(u8, ty_tok.lexeme);
+                    }
+                    try param_types.append(ptype);
+
                     if (!self.match(.comma)) break;
                 }
             }
             _ = try self.consume(.right_paren, "Expect ')' after parameters");
+
+            // Optional return type: : Type
+            var ret_type: ?[]const u8 = null;
+            if (self.match(.colon)) {
+                const rt_tok = try self.consume(.identifier, "Expect return type after ':'");
+                ret_type = try self.allocator.dupe(u8, rt_tok.lexeme);
+            }
+
             // Parse method body: require a '{' then delegate to blockStatement
             _ = try self.consume(.left_brace, "Expect '{' before method body");
             const body = try self.blockStatement();
@@ -186,6 +246,8 @@ pub const Parser = struct {
             const method_impl = ast.MethodImpl{
                 .name = method_name,
                 .params = params,
+                .param_types = param_types,
+                .return_type = ret_type,
                 .body = body,
             };
             try node.data.impl_decl.methods.append(method_impl);
@@ -199,7 +261,14 @@ pub const Parser = struct {
         const var_node = try Node.init(self.allocator, .variable_decl);
         var_node.data.variable_decl.name = try self.allocator.dupe(u8, name.lexeme);
 
-        // Check for initialization
+        // Optional declared type: : Type
+        var_node.data.variable_decl.declared_type = null;
+        if (self.match(.colon)) {
+            const ty_tok = try self.consume(.identifier, "Expect type name after ':'");
+            var_node.data.variable_decl.declared_type = try self.allocator.dupe(u8, ty_tok.lexeme);
+        }
+
+        // Optional initializer
         if (self.match(.equal)) {
             var_node.data.variable_decl.value = try self.expression();
         } else {

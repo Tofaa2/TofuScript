@@ -134,6 +134,10 @@ pub const Compiler = struct {
                 try compiler.compile(node.data.function_decl.body);
                 try compiler.emitReturn();
 
+                if (trace.enabled) {
+                    compiler.function.chunk.disassemble(node.data.function_decl.name);
+                }
+
                 // Finalize function upvalue count
                 compiler.function.upvalue_count = @intCast(compiler.upvalues.items.len);
 
@@ -181,9 +185,13 @@ pub const Compiler = struct {
                     if (name_index > 255) return error.TooManyConstants;
                     try self.emitByte(@intCast(name_index));
                 } else {
-                    // Local variable: just bind it to the current scope; value already on stack
+                    // Local variable: declare, define, then store the value in the local slot
                     try self.declareVariable(name);
                     try self.defineVariable(name);
+                    // Store the value (on stack) into the local slot
+                    const local_index = self.locals.items.len - 1;
+                    try self.emitByte(@intFromEnum(OpCode.store_local));
+                    try self.emitByte(@intCast(local_index));
                 }
             },
             .assignment => {

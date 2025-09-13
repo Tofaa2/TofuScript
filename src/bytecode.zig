@@ -124,7 +124,7 @@ pub const Chunk = struct {
             .get_field => return self.constantInstruction("OP_GET_FIELD", offset),
             .set_field => return self.constantInstruction("OP_SET_FIELD", offset),
             .cast_to_trait => return self.simpleInstruction("OP_CAST_TO_TRAIT", offset),
-            .invoke_trait => return self.byteInstruction("OP_INVOKE_TRAIT", offset),
+            .invoke_trait => return self.twoByteInstruction("OP_INVOKE_TRAIT", offset),
             .add => return self.simpleInstruction("OP_ADD", offset),
             .subtract => return self.simpleInstruction("OP_SUBTRACT", offset),
             .multiply => return self.simpleInstruction("OP_MULTIPLY", offset),
@@ -158,6 +158,13 @@ pub const Chunk = struct {
         const slot = self.code.items[offset + 1];
         std.debug.print("{s} {d}\n", .{ name, slot });
         return offset + 2;
+    }
+
+    fn twoByteInstruction(self: *Chunk, name: []const u8, offset: usize) usize {
+        const a = self.code.items[offset + 1];
+        const b = self.code.items[offset + 2];
+        std.debug.print("{s} {d} {d}\n", .{ name, a, b });
+        return offset + 3;
     }
 
     fn constantInstruction(self: *Chunk, name: []const u8, offset: usize) usize {

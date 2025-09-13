@@ -86,6 +86,7 @@ Source → Lexer → Parser → AST → Compiler → Bytecode → VM
 
 Where we are headed:
 - Insert Resolver between Parser and Compiler to bind identifiers, manage locals/upvalues, and support closures.
+- Insert TypeChecker after Resolver to enforce static types, annotate AST, and enable better codegen and error reporting.
 - Introduce precise GC and central allocator for all heap objects.
 - Add module loader before compilation for multi-file programs.
 
@@ -97,9 +98,10 @@ flowchart TD
   B --> C[Parser]
   C --> D[AST]
   D --> E[Resolver]
-  E --> F[Compiler]
-  F --> G[Bytecode]
-  G --> H[VM]
+  E --> F[TypeChecker]
+  F --> G[Compiler]
+  G --> H[Bytecode]
+  H --> I[VM]
 ```
 
 ## Roadmap to 1.0
@@ -120,25 +122,37 @@ Phase 2 — (Complete) Scoping and closures:
 - Introduction of structs, traits and trait implementation for structs.
 - Closure objects and upvalue capture semantics.
 
+Phase 2.5 — Static type system foundations:
+- Syntax: explicit type annotations for variables, parameters, returns, struct fields. Examples:
+  - var x: Number = 42;
+  - func len(a: String): Number { ... }
+  - struct Point { x: Number, y: Number }
+- Resolver extensions: bind identifiers with type info; build a typed symbol table.
+- TypeChecker: annotate AST with types; validate operations; produce helpful errors.
+- Local inference: infer types of let/var initializers within a statement where unambiguous (no global/field inference initially).
+- Traits and types: treat traits as interfaces; method signatures carry types; impl conformance checks.
+- Codegen policy: keep current bytecode untyped but reject ill-typed programs at compile time; prepare for typed-specialized fast paths.
+- Nativisation policy: keep primitive types native to the project itself, not the std. Convert print to a native function and have native function access instead of it littering the ast. Make primitives consistent with naming.
+
 Phase 3 — Runtime and memory:
 - Central allocator for all heap objects.
 - Precise mark-sweep GC with root set (stack, globals, frames), write barriers, and stress tests.
 - String interning and rope/arena strategy for concat-heavy workloads.
 
-Phase 4 — Collections and standard library MVP:
-- Arrays: NEW_ARRAY, GET_INDEX, SET_INDEX; iterators.
-- Maps: NEW_MAP, GET_KEY, SET_KEY; hashing for strings and numbers.
-- stdlib: io, os, math, string, array, map, fmt.
+Phase 4 — Collections and standard library MVP (typed):
+- Arrays: NEW_ARRAY, GET_INDEX, SET_INDEX; iterators; element type tracked by TypeChecker.
+- Maps: NEW_MAP, GET_KEY, SET_KEY; typed keys/values; hashing for strings and numbers.
+- stdlib: io, os, math, string, array, map, fmt with typed signatures.
 
 Phase 5 — Tooling and UX:
 - REPL with line editing, multi-line input, and error reporting.
 - Module system: file-based loader, search paths, module cache.
-- LSP and Syntax Highlighting.
+- LSP and Syntax Highlighting (type-aware diagnostics, hover types, go-to def).
 - Debugger hooks: breakpoints, step, stack traces, value inspection.
 
 Phase 6 — Optimization and releases:
-- Compiler: constant folding, dead-code elimination for blocks, peephole pass.
-- VM: inline caches for globals and calls, superinstructions for hot opcode pairs, fast paths for numbers.
+- Compiler: constant folding, dead-code elimination for blocks, peephole pass (type-aware).
+- VM: inline caches for globals and calls, superinstructions for hot opcode pairs, fast paths for numbers and common typed ops.
 - Cross-platform CI and prebuilt binaries for Windows/macOS/Linux.
 
 ## Performance plan
@@ -154,11 +168,13 @@ Medium term (algorithmic improvements):
 - Add superinstructions for common pairs like load-constant; call; return and arithmetic chains.
 - Improve constant pool layout and constant_long emission to be branchless.
 - Basic block formation in compiler to aid peephole optimizer.
+- Type-guided optimizations: constant-propagate types; remove dynamic tag checks for statically safe regions.
 
 Long term (memory and locality):
 - Precise GC with generational nursery; bump allocation for short-lived objects.
 - Allocate frames and stacks in contiguous arenas to improve cache locality.
 - Consider optional register-based VM variant behind build flag, measured by benchmarks.
+- Optional typed-specialized opcodes for hottest numeric and string paths (behind a build flag).
 
 Benchmarking strategy:
 - Micro: arithmetic, string concat, function call overhead, map/array ops once implemented.
@@ -168,7 +184,8 @@ Benchmarking strategy:
 ## Testing and CI
 
 - Unit tests per component; add golden tests for lexer/parser and VM traces.
-- End-to-end tests from source to output for small programs.
+- TypeChecker tests: well-typed acceptance, ill-typed rejection, error spans, and trait conformance tests.
+- End-to-end tests from source to output for small typed programs.
 - GitHub Actions: build, test, format, and run benchmarks on push/PR across platforms.
 
 ## Contributing
@@ -178,3 +195,43 @@ Contributions are welcome. Good first issues will be labeled as we break work in
 ## License
 
 MIT License. See LICENSE.
+
+## Static typing vision and plan
+
+Why static types
+- Predictable performance: eliminate dynamic tag checks in verified regions; unlock typed fast paths in VM and compiler.
+- Maintainability: explicit contracts at function boundaries; earlier and clearer error messages; safer refactors.
+- Tooling: richer IDE support and documentation from types.
+
+Surface syntax (initial)
+- Variables: var x: Number = 42; var s: String = "hi";
+- Functions: func add(a: Number, b: Number): Number { ... }
+- Structs: struct Point { x: Number, y: Number }
+- Traits: trait Printable { toString(self: Self): String }
+- Impl: impl Printable for Point { toString(self: Point): String { ... } }
+
+Semantics and inference
+- Strongly typed by default: annotations required at public boundaries (func params/returns, struct fields). Local inference allowed for simple initializers: var x = 1; infers Number.
+- No implicit widening that loses precision. Numeric ops require compatible operands; string + number is allowed via ToString coercion rule or explicit fmt, to be decided behind a feature flag.
+- Trait conformance checked at compile time: implemented methods must match signatures.
+
+Compiler architecture changes
+- Resolver: extended to record symbol kinds and declared types.
+- TypeChecker: runs after Resolver to annotate AST, resolve generics (future), and verify trait impls.
+- Bytecode/VM: remain untyped initially; rely on TypeChecker for safety. Later, introduce typed fast paths where profitable.
+
+Phased delivery
+- Phase 2.5 (this roadmap): syntax, Resolver extensions, TypeChecker for core types, typed traits/impls, local inference.
+- Phase 3 tie-in: allocator/GC aware of typed objects where helpful; string interning supports fast equality aligned with String type.
+- Phase 4 tie-in: typed collections; iterators expose element types; stdlib APIs exported with signatures.
+
+Migration strategy
+- Gate enforcement behind a build flag initially: -Dtypes=strict vs -Dtypes=loose.
+- Start by annotating stdlib and examples; provide compiler suggestions for missing annotations.
+- Add formatter hints and LSP integration to auto-insert stubs.
+
+Open questions to validate via RFCs
+- Numeric tower and literal typing (Number vs Int/Float)
+- Generics and monomorphization vs reified generics
+- Nullability model: Option[T] vs implicit nil
+- String interpolation and ToString rules

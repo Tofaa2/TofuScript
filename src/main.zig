@@ -7,6 +7,10 @@ const compiler = @import("compiler.zig");
 const vm = @import("vm.zig");
 const value = @import("value.zig");
 const trace = @import("trace.zig");
+const resolver = @import("resolver.zig");
+const typecheck = @import("typecheck.zig");
+const types_mod = @import("types.zig");
+const build_options = @import("build_options");
 
 const Lexer = lexer.Lexer;
 const Token = tokens.Token;
@@ -33,7 +37,7 @@ pub fn main() !void {
         source = try std.fs.cwd().readFileAlloc(allocator, path, 10 * 1024 * 1024);
     } else {
         source =
-            \\ func main() {
+            \\ func main(): Nil {
             \\   var sum = 0;
             \\   for (var i = 0; i < 5; i = i + 1) {
             \\     if (i == 2) continue;
@@ -70,6 +74,26 @@ pub fn main() !void {
     const ast_root = try my_parser.parse();
     defer ast_root.deinit(allocator);
 
+    // Phase 2.5: Resolver (nominal registration) and TypeChecker (strict/loose via -Dtypes)
+    var res = try resolver.runResolve(allocator, ast_root);
+    defer res.deinit(allocator);
+    if (!res.ok) {
+        for (res.diagnostics.items) |msg| {
+            std.debug.print("{s}\n", .{msg});
+        }
+        return;
+    }
+
+    const mode: types_mod.Mode = if (std.mem.eql(u8, build_options.types_mode, "strict")) .strict else .loose;
+    var tc_res = try typecheck.runTypecheck(allocator, ast_root, mode);
+    defer tc_res.deinit(allocator);
+    if (!tc_res.ok) {
+        for (tc_res.diagnostics.items) |msg| {
+            std.debug.print("{s}\n", .{msg});
+        }
+        return;
+    }
+
     // Compile
     var my_compiler = try Compiler.init(allocator, .script);
     defer my_compiler.deinit();
@@ -90,7 +114,9 @@ pub fn main() !void {
     try my_vm.interpret(my_compiler.function);
 
     // Disassemble the chunk (for debugging)
-    my_compiler.function.chunk.disassemble("main");
+    if (trace.enabled) {
+        my_compiler.function.chunk.disassemble("main");
+    }
 }
 
 fn nativePrint(arg_count: u8, args: []value.Value) value.Value {

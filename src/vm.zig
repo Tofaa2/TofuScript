@@ -108,7 +108,16 @@ pub const VM = struct {
                 .get_global => {
                     const name_obj = self.readConstant(frame);
                     const name = @as(*value.ObjString, @fieldParentPtr("obj", name_obj.obj)).*;
+                    if (trace.enabled) trace.log("VM", "get_global name={s}", .{name.chars});
                     if (self.globals.get(name.chars)) |value_i| {
+                        if (trace.enabled) {
+                            const tag = @as(std.meta.Tag(Value), value_i);
+                            if (value_i == .obj) {
+                                trace.log("VM", "get_global value tag={s} obj={s}", .{ @tagName(tag), @tagName(value_i.obj.type) });
+                            } else {
+                                trace.log("VM", "get_global value tag={s}", .{@tagName(tag)});
+                            }
+                        }
                         try self.push(value_i);
                     } else {
                         std.debug.print("Undefined variable: {s}\n", .{name.chars});
@@ -209,7 +218,7 @@ pub const VM = struct {
                                 return error.BadMethodFunction;
                             }
                             const func = @as(*value.ObjFunction, @fieldParentPtr("obj", func_val.obj));
-                            std.debug.print("bind method {s} arity={d}\n", .{ method_name, func.arity });
+                            if (trace.enabled) trace.log("VM", "bind method {s} arity={d}", .{ method_name, func.arity });
                             const closure = try value.ObjClosure.init(self.allocator, func);
                             trait_inst.vtable.items[i] = Value{ .obj = &closure.obj };
                         } else {
@@ -337,22 +346,105 @@ pub const VM = struct {
                         std.debug.print("Invalid local slot {d} (slots={d}, slot={d}, stack_len={d})\n", .{ idx, frame.slots, slot, self.stack.items.len });
                         return error.InvalidLocalSlot;
                     }
-                    // Debug print to trace valid local access
-                    std.debug.print("load_local: idx={d} (slots={d}, slot={d}, stack_len={d})\n", .{ idx, frame.slots, slot, self.stack.items.len });
-                    try self.push(self.stack.items[idx]);
+                    if (trace.enabled) {
+                        const v = self.stack.items[idx];
+                        const tag = @as(std.meta.Tag(Value), v);
+                        const ar = frame.function.arity;
+                        if (v == .obj) {
+                            trace.log("VM", "load_local idx={d} slots={d} slot={d} arity={d} stack_len={d} tag={s} obj={s}", .{ idx, frame.slots, slot, ar, self.stack.items.len, @tagName(tag), @tagName(v.obj.type) });
+                        } else {
+                            trace.log("VM", "load_local idx={d} slots={d} slot={d} arity={d} stack_len={d} tag={s}", .{ idx, frame.slots, slot, ar, self.stack.items.len, @tagName(tag) });
+                        }
+                        // dump a small window around the base and params to diagnose aliasing
+                        const base = frame.slots;
+                        var start: isize = @as(isize, @intCast(base)) - 2;
+                        if (start < 0) start = 0;
+                        var end: usize = base + 2 + @as(usize, ar);
+                        if (end > self.stack.items.len) end = self.stack.items.len;
+                        var i: usize = @intCast(start);
+                        while (i < end) : (i += 1) {
+                            const vv = self.stack.items[i];
+                            const t = @as(std.meta.Tag(Value), vv);
+                            if (vv == .obj) {
+                                trace.log("VM", "  dump[i]={d} tag={s} obj={s}", .{ i, @tagName(t), @tagName(vv.obj.type) });
+                            } else {
+                                trace.log("VM", "  dump[i]={d} tag={s}", .{ i, @tagName(t) });
+                            }
+                        }
+                    }
+                    const val_local = self.stack.items[idx];
+                    if (trace.enabled) {
+                        const tag_vl = @as(std.meta.Tag(Value), val_local);
+                        if (val_local == .obj) {
+                            trace.log("VM", "load_local about to push tag={s} obj={s}", .{ @tagName(tag_vl), @tagName(val_local.obj.type) });
+                        } else {
+                            trace.log("VM", "load_local about to push tag={s}", .{@tagName(tag_vl)});
+                        }
+                    }
+                    try self.push(val_local);
                 },
                 .store_local => {
                     const slot = self.readByte(frame);
                     const idx = frame.slots + 1 + slot;
-                    if (idx >= self.stack.items.len) {
-                        std.debug.print("Invalid local slot {d}\n", .{idx});
-                        return error.InvalidLocalSlot;
+                    // Pop the value first to avoid reducing length below idx during assignment
+                    const val = self.pop();
+                    if (trace.enabled) {
+                        const tag = @as(std.meta.Tag(Value), val);
+                        if (val == .obj) {
+                            trace.log("VM", "store_local idx={d} slot={d} base={d} tag={s} obj={s} pre_len={d}", .{ idx, slot, frame.slots, @tagName(tag), @tagName(val.obj.type), self.stack.items.len });
+                        } else {
+                            trace.log("VM", "store_local idx={d} slot={d} base={d} tag={s} pre_len={d}", .{ idx, slot, frame.slots, @tagName(tag), self.stack.items.len });
+                        }
                     }
-                    self.stack.items[idx] = self.peek(0);
+                    // Ensure capacity and length for the target local slot
+                    while (self.stack.items.len <= idx) {
+                        try self.stack.append(Value{ .nil = {} });
+                    }
+                    self.stack.items[idx] = val;
+                    if (trace.enabled) {
+                        const v2 = self.stack.items[idx];
+                        const tag2 = @as(std.meta.Tag(Value), v2);
+                        if (v2 == .obj) {
+                            trace.log("VM", "store_local set idx={d} tag={s} obj={s} post_len={d}", .{ idx, @tagName(tag2), @tagName(v2.obj.type), self.stack.items.len });
+                        } else {
+                            trace.log("VM", "store_local set idx={d} tag={s} post_len={d}", .{ idx, @tagName(tag2), self.stack.items.len });
+                        }
+                    }
                 },
                 .add => {
+                    if (trace.enabled) {
+                        const len = self.stack.items.len;
+                        trace.log("VM", "ADD pre stack_len={d}", .{len});
+                        var k: isize = @as(isize, @intCast(len)) - 1;
+                        var count: usize = 0;
+                        while (k >= 0 and count < 8) : (k -= 1) {
+                            const idx: usize = @intCast(k);
+                            const v = self.stack.items[idx];
+                            const tag = @as(std.meta.Tag(Value), v);
+                            if (v == .obj) {
+                                trace.log("VM", "  idx={d} tag={s} obj={s}", .{ idx, @tagName(tag), @tagName(v.obj.type) });
+                            } else {
+                                trace.log("VM", "  idx={d} tag={s}", .{ idx, @tagName(tag) });
+                            }
+                            count += 1;
+                        }
+                    }
                     const b = self.pop();
                     const a = self.pop();
+
+                    if (trace.enabled) {
+                        const tagA = @as(std.meta.Tag(Value), a);
+                        const tagB = @as(std.meta.Tag(Value), b);
+                        if (a == .obj and b == .obj) {
+                            trace.log("VM", "ADD popped a={s}/{s} b={s}/{s}", .{ @tagName(tagA), @tagName(a.obj.type), @tagName(tagB), @tagName(b.obj.type) });
+                        } else if (a == .obj) {
+                            trace.log("VM", "ADD popped a={s}/{s} b={s}", .{ @tagName(tagA), @tagName(a.obj.type), @tagName(tagB) });
+                        } else if (b == .obj) {
+                            trace.log("VM", "ADD popped a={s} b={s}/{s}", .{ @tagName(tagA), @tagName(tagB), @tagName(b.obj.type) });
+                        } else {
+                            trace.log("VM", "ADD popped a={s} b={s}", .{ @tagName(tagA), @tagName(tagB) });
+                        }
+                    }
 
                     if (a == .number and b == .number) {
                         try self.push(Value{ .number = a.number + b.number });
@@ -378,6 +470,15 @@ pub const VM = struct {
                         const obj_str = try value.ObjString.init(self.allocator, combined);
                         try self.push(Value{ .obj = &obj_str.obj });
                     } else {
+                        if (trace.enabled) {
+                            const tagA = @as(std.meta.Tag(Value), a);
+                            const tagB = @as(std.meta.Tag(Value), b);
+                            std.debug.print("ADD type mismatch: a={s}", .{@tagName(tagA)});
+                            if (a == .obj) std.debug.print(" a.obj={s}", .{@tagName(a.obj.type)});
+                            std.debug.print(" b={s}", .{@tagName(tagB)});
+                            if (b == .obj) std.debug.print(" b.obj={s}", .{@tagName(b.obj.type)});
+                            std.debug.print("\n", .{});
+                        }
                         std.debug.print("Operands must be two numbers or strings with a number\n", .{});
                         return error.OperandTypeMismatch;
                     }
@@ -437,21 +538,21 @@ pub const VM = struct {
                 .call => {
                     const arg_count = self.readByte(frame);
                     const cal = self.peek(arg_count);
-                    if (cal == .obj) {
+                    if (trace.enabled and cal == .obj) {
                         switch (cal.obj.type) {
                             .closure => {
                                 const cl = @as(*ObjClosure, @fieldParentPtr("obj", cal.obj));
-                                std.debug.print("call opcode: closure arity={d} argc={d}\n", .{ cl.function.arity, arg_count });
+                                trace.log("VM", "call opcode closure arity={d} argc={d}", .{ cl.function.arity, arg_count });
                             },
                             .function => {
                                 const fnp = @as(*ObjFunction, @fieldParentPtr("obj", cal.obj));
-                                std.debug.print("call opcode: function arity={d} argc={d}\n", .{ fnp.arity, arg_count });
+                                trace.log("VM", "call opcode function arity={d} argc={d}", .{ fnp.arity, arg_count });
                             },
                             .native => {
-                                std.debug.print("call opcode: native argc={d}\n", .{arg_count});
+                                trace.log("VM", "call opcode native argc={d}", .{arg_count});
                             },
                             else => {
-                                std.debug.print("call opcode: non-callable type\n", .{});
+                                trace.log("VM", "call opcode non-callable type", .{});
                             },
                         }
                     }
@@ -526,7 +627,7 @@ pub const VM = struct {
                 .closure => {
                     const closure = @as(*ObjClosure, @fieldParentPtr("obj", obj));
                     const function = closure.function;
-                    std.debug.print("callValue: closure arity={d}, argc={d}\n", .{ function.arity, arg_count });
+                    if (trace.enabled) trace.log("VM", "callValue closure arity={d} argc={d}", .{ function.arity, arg_count });
                     if (arg_count != function.*.arity) {
                         std.debug.print("Expected {d} arguments but got {d}\n", .{ function.arity, arg_count });
                         return false;
@@ -534,6 +635,32 @@ pub const VM = struct {
                     if (self.frames.items.len == FramesMax) {
                         std.debug.print("Stack overflow\n", .{});
                         return false;
+                    }
+                    if (trace.enabled) {
+                        const base = self.stack.items.len - arg_count - 1;
+                        var i: usize = if (base > 2) base - 2 else 0;
+                        while (i < self.stack.items.len) : (i += 1) {
+                            const v = self.stack.items[i];
+                            const tag = @as(std.meta.Tag(Value), v);
+                            if (v == .obj) {
+                                trace.log("VM", "stack[i]={d} base={d} tag={s} obj={s}", .{ i, base, @tagName(tag), @tagName(v.obj.type) });
+                            } else {
+                                trace.log("VM", "stack[i]={d} base={d} tag={s}", .{ i, base, @tagName(tag) });
+                            }
+                        }
+                        // Log call frame mapping expectations
+                        trace.log("VM", "callValue.closure base={d} argc={d} local0_idx={d} local1_idx={d}", .{ base, arg_count, base + 1, base + 2 });
+                        // Log concrete values at arg positions
+                        if (arg_count > 0) {
+                            const v0 = self.stack.items[base + 1];
+                            const tag0 = @as(std.meta.Tag(Value), v0);
+                            if (v0 == .obj) trace.log("VM", "arg0 tag={s} obj={s}", .{ @tagName(tag0), @tagName(v0.obj.type) }) else trace.log("VM", "arg0 tag={s}", .{@tagName(tag0)});
+                        }
+                        if (arg_count > 1) {
+                            const v1 = self.stack.items[base + 2];
+                            const tag1 = @as(std.meta.Tag(Value), v1);
+                            if (v1 == .obj) trace.log("VM", "arg1 tag={s} obj={s}", .{ @tagName(tag1), @tagName(v1.obj.type) }) else trace.log("VM", "arg1 tag={s}", .{@tagName(tag1)});
+                        }
                     }
                     self.frames.append(.{
                         .function = function,
@@ -545,7 +672,7 @@ pub const VM = struct {
                 },
                 .function => {
                     const function = @as(*ObjFunction, @fieldParentPtr("obj", obj));
-                    std.debug.print("callValue: function arity={d}, argc={d}\n", .{ function.arity, arg_count });
+                    if (trace.enabled) trace.log("VM", "callValue function arity={d} argc={d}", .{ function.arity, arg_count });
                     if (arg_count != function.*.arity) {
                         std.debug.print("Expected {d} arguments but got {d}\n", .{ function.arity, arg_count });
                         return false;
@@ -554,6 +681,20 @@ pub const VM = struct {
                     if (self.frames.items.len == FramesMax) {
                         std.debug.print("Stack overflow\n", .{});
                         return false;
+                    }
+
+                    if (trace.enabled) {
+                        const base = self.stack.items.len - arg_count - 1;
+                        var i: usize = if (base > 2) base - 2 else 0;
+                        while (i < self.stack.items.len) : (i += 1) {
+                            const v = self.stack.items[i];
+                            const tag = @as(std.meta.Tag(Value), v);
+                            if (v == .obj) {
+                                trace.log("VM", "stack[i]={d} base={d} tag={s} obj={s}", .{ i, base, @tagName(tag), @tagName(v.obj.type) });
+                            } else {
+                                trace.log("VM", "stack[i]={d} base={d} tag={s}", .{ i, base, @tagName(tag) });
+                            }
+                        }
                     }
 
                     self.frames.append(.{
@@ -604,10 +745,28 @@ pub const VM = struct {
             return error.StackOverflow;
         }
         try self.stack.append(value_o);
+        if (trace.enabled) {
+            const idx: usize = self.stack.items.len - 1;
+            const tag = @as(std.meta.Tag(Value), value_o);
+            if (value_o == .obj) {
+                trace.log("VM", "push idx={d} tag={s} obj={s} new_len={d}", .{ idx, @tagName(tag), @tagName(value_o.obj.type), self.stack.items.len });
+            } else {
+                trace.log("VM", "push idx={d} tag={s} new_len={d}", .{ idx, @tagName(tag), self.stack.items.len });
+            }
+        }
     }
 
     fn pop(self: *VM) Value {
-        return self.stack.pop().?;
+        const v = self.stack.pop().?;
+        if (trace.enabled) {
+            const tag = @as(std.meta.Tag(Value), v);
+            if (v == .obj) {
+                trace.log("VM", "pop tag={s} obj={s} new_len={d}", .{ @tagName(tag), @tagName(v.obj.type), self.stack.items.len });
+            } else {
+                trace.log("VM", "pop tag={s} new_len={d}", .{ @tagName(tag), self.stack.items.len });
+            }
+        }
+        return v;
     }
 
     fn peek(self: *VM, distance: usize) Value {
